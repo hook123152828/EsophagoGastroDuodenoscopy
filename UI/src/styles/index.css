@@ -1,0 +1,198 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --paper: #e9edf2;
+  --surface: #ffffff;
+  --sunken: #f3f6fa;
+  --ink: #0e1b27;
+  --ink-soft: #566472;
+  --ink-faint: #8a98a6;
+  --line: #dbe3eb;
+  --brand: #0b6e63;
+  --brand-deep: #075049;
+  --wl: #b7740f;
+  --nbi: #1787a8;
+  --im: #ce1f5e;
+  --ok: #1e9e68;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: 'IBM Plex Sans', 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+  /* Cool clinical light ground: a faint teal top-light and a paper base, so the
+     white cards read as lifted panels rather than floating on flat grey. */
+  background:
+    radial-gradient(1200px 680px at 8% -10%, rgba(11, 110, 99, 0.06), transparent 60%),
+    radial-gradient(1000px 600px at 100% -6%, rgba(23, 135, 168, 0.05), transparent 58%),
+    var(--paper);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+@layer components {
+  /* A lifted white panel — the base surface of the whole console. */
+  .card {
+    @apply rounded-2xl border border-line bg-surface shadow-md;
+  }
+
+  /* A recessed well inside a card — for data readouts and drop targets. */
+  .well {
+    @apply rounded-xl border border-line bg-sunken;
+  }
+
+  /* Small structural label. Uppercase, tracked, used for section eyebrows. */
+  .eyebrow {
+    @apply font-display text-[11px] font-medium uppercase tracking-[0.16em] text-inkFaint;
+  }
+
+  /* A data/telemetry pill — for site codes, modes, counts. */
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-sunken px-2.5 py-1 font-mono text-[11px] tracking-wide text-inkSoft;
+  }
+}
+
+/* Range sliders, tuned for the light surface. */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand) 0%, var(--brand) var(--fill, 50%), #dbe3eb var(--fill, 50%));
+  outline: none;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 3px solid var(--brand);
+  box-shadow: 0 1px 3px rgba(14, 27, 39, 0.25);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+input[type='range']::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 3px solid var(--brand);
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* The scope aperture: a soft circular vignette + inner ring that frames the
+   live video as if seen down an endoscope. */
+.aperture::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 120px 24px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  background: radial-gradient(circle at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.28) 100%);
+}
+
+/* Animations */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-pop-in {
+  animation: pop-in 0.35s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.animate-shimmer {
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Recording / live pulse. */
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(206, 31, 94, 0.5);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 6px rgba(206, 31, 94, 0);
+  }
+}
+.animate-rec {
+  animation: rec-pulse 1.6s ease-out infinite;
+}
+
+/* Active anatomy station halo. */
+@keyframes station-glow {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+.animate-station {
+  animation: station-glow 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-fade-up,
+  .animate-pop-in,
+  .animate-shimmer,
+  .animate-rec,
+  .animate-station {
+    animation: none;
+  }
+}

@@ -1,0 +1,27 @@
+# Node / build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+
+# Large model projects (multi-GB weights, read-only reference) — delivered via
+# the bundle zip, not git. Their .pth files exceed GitHub's 100MB limit.
+/CGI/
+/GNS/
+/GIM/
+
+# Stray model weights anywhere
+*.pth
+*.pt
+*.onnx
+*.engine
+
+# Runtime / local artifacts
+/logs/*.log
+backend/data/*.db
+.playwright-mcp/
+*.zip
+/video/
