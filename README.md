@@ -1,143 +1,301 @@
-# Multi-Module Project (GNS / GIM / CGI)
+# 上消化道內視鏡 AI 主控台
 
-本專案包含三個主要模組：**GNS**、**GIM** 與 **CGI**。以下為各模組的環境建置、資料集準備與執行說明。
+把一支內視鏡檢查影片餵進三個 AI 模型，即時顯示目前檢查部位、疊上腸上皮化生
+（IM）分割結果，並把逐幀分析結果交給下游流程產生報告。
 
----
+判讀不需要等待：影片一載入就能邊播邊判，畫面跑到背景掃描還沒走到的地方時，
+系統會就地推論當下那一幀（約 25–30 ms）。
 
-## 📋 目錄
-1. [GNS 模組](#gns-module)
-   - [環境安裝](#gns-env)
-   - [資料集目錄結構與設定](#gns-dataset)
-   - [執行指令](#gns-exec)
-   - [權重路徑設定](#gns-weights)
-2. [GIM 模組](#gim-module)
-   - [環境安裝](#gim-env)
-3. [CGI 模組](#cgi-module)
-   - [環境安裝](#cgi-env)
+| 模型 | 用途 | 說明 |
+|------|------|------|
+| **GNS** (SGAFormer) | 解剖部位分類 | 16 類（食道／胃 G1–G6／十二指腸 × WL·NBI） |
+| **GIM** (Mask Focal Modulation Network) | IM 分割 | Mask2Former + FocalNet，**只在 NBI 影像上有效** |
+| **CGI** (GSCNet) | 胃體為主胃炎判別 | 吃三張白光影像（胃竇／胃體／賁門） |
 
----
+前端有兩個獨立開發的頁面，中間只有一層固定契約：
 
-## 🚀 GNS 模組 <a id="gns-module"></a>
+- **`/live`** — 即時檢視：上傳／選片、播放、即時部位判讀、IM 疊圖開關、時間軸
+- **`/report`** — 報告：訂閱掃描完成事件後接手下游流程（**目前是空殼**）
 
-### 🛠️ 環境安裝 <a id="gns-env"></a>
-
-請使用 `conda` 與 `pip` 安裝指定版本的 PyTorch、NATTEN 及相關依賴套件。建議在具備 GPU 的環境下執行：
-
-```bash
-conda create -n [env_name] python=3.8
-
-# 1. 安裝 PyTorch 核心環境與 CUDA 工具包
-conda install pytorch==1.11.0 torchvision==0.12.0 cudatoolkit=11.3 -c pytorch -y
-
-# 2. 安裝 NATTEN、timm 及其他核心依賴套件
-pip install https://www.shi-labs.com/natten/wheels/cu113/torch1.11/natten-0.14.4%2Btorch1110cu113-cp38-cp38-linux_x86_64.whl git+https://github.com/rwightman/pytorch-image-models.git@9d6aad44f8fd32e89e5cca503efe3ada5071cc2a fvcore==0.1.5.post20220305 pyyaml==6.0 "numpy<2.0.0" --trusted-host www.shi-labs.com
-
-
-# 3. 安裝其他影像處理與數據分析套件
-pip install opencv-python pandas
-```
-
-### 📂 資料集目錄結構與設定 <a id="gns-dataset"></a>
-
-專案支援多中心或單一資料集的讀取，標準的目錄階層配置如下：
-資料夾位置:
-🔗 [資料集位置:](https://140.113.210.83:5001/#/signin)
-
-```text
-dataset/
-├── train/
-│   └── hospital_name/
-│       └── class_name/
-│           └── 1.png
-└── test/
-    └── hospital_name/
-        └── class_name/
-            └── 1.png
-```
-
-#### 資料集準備方案（三選一）：
-1. **新資料放法一**：直接依據圖片的類別（Class），分類放入 `train` 或 `test` 底下的 `hospital_name/class_name` 資料夾。
-2. **新資料放法二**：可先建立個別的醫院資料夾 `hospital_name`，再於內部根據類別建立子資料夾置放圖片。
-3. **自定義資料集**：可以自行撰寫 Dataset 程式碼，修改資料讀取邏輯以符合您現有的資料架構。
-
-#### 內建 Dataloader 與參數設定
-本專案已**內建編寫好的私人與公開資料集 Dataloader**，使用時請注意以下設定：
-- **路徑確認**：在開始執行前，請先確認 Dataloader 內部的讀取路徑。預設狀況下，系統皆會前往根目錄底下的 `dataset/` 資料夾內讀取對應的資料。
-- **參數修改**：請至程式碼中尋找並修改 `DATASET` 參數，以切換至您想使用的資料集目標。例如：
-
-```python
-# 根據需求更換為指定的內建資料集名稱
-DATASET = "AIGNS"
-# DATASET = "GastroHUN"
-```
-
-### 💻 執行指令 <a id="gns-exec"></a>
-
-#### 1. 模型訓練 (Training)
-執行以下指令開始訓練模型：
-
-```bash
-python main.py --mode train
-```
-
-#### 2. 模型評估 (Evaluation / Inference)
-使用測試集進行模型效能與指標評估：
-
-```bash
-python main.py --mode evaluate
-```
-
-#### 3. 單張圖片預測 (Prediction)
-將需要進行單張推論的圖片放入 `data/` 資料夾中，並執行：
-
-```bash
-python main.py --mode predict
-```
-
-### 💾 權重路徑設定 <a id="gns-weights"></a>
-
-執行相關腳本前，請先至 `main.py` 中手動確認或修改以下權重路徑：
-
-- **訓練階段（儲存最佳權重）**：
-  模型訓練過程中，最佳權重的儲存路徑由 `main.py` 內部的 `best_path` 變數定義：
-
-  ```python
-  best_path = "path/to/save/best_model.pth"
-  ```
-
-- **測試與預測階段（載入權重）**：
-  進行評估或單張預測時，載入的模型權重路徑由 `main.py` 內部的 `load_path` 變數定義：
-
-  ```python
-  load_path = "path/to/load/checkpoint.pth"
-  ```
+契約規格見 **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)**。要開發 `/report` 的人請先讀它。
 
 ---
 
-## 🌐 GIM 模組 <a id="gim-module"></a>
+## 系統需求
 
-### 🛠️ 環境安裝 <a id="gim-env"></a>
+- NVIDIA GPU（開發驗證於 **RTX 4090 / 24GB**，CUDA 11.8 驅動）
+- Linux
+- `conda`（Miniconda 或 Anaconda）
+- `ffmpeg` 與 `ffprobe`
+- Node.js 20+
 
-GIM 模組涉及網頁系統或平台的建置，詳細環境依賴與安裝步驟，請直接參考以下專案連結的說明：
-🔗 [CIS_IM_Website GitHub 專案頁面](https://github.com/chenyuting3077/CIS_IM_Website?tab=readme-ov-file)
+三個模型的相依版本互不相容（torch 1.11 / 2.0 / 2.0），所以**各跑在自己的 conda
+環境**，透過 HTTP 溝通。這是刻意的設計，不要嘗試合併成一個環境。
 
-### 💻 測試
+---
 
-```bash
-python test.py
+## 一、取得外部模型專案與權重
+
+三個模型專案**不在本 repo 內**（權重合計超過 3GB，遠超 GitHub 檔案上限）。
+請另行取得後放到以下位置：
+
+```
+code/
+├── GNS/
+│   ├── nat.py, dataloader.py, module/ ...
+│   └── weights/best_94.0050_AIGNS.pth          (681 MB)
+├── GIM/
+│   ├── mmsegmentation-main/                     (版本綁死的原始碼樹，要 editable 安裝)
+│   ├── mmdetection/                             (同上)
+│   └── model/
+│       ├── mask2former_FocalNet_tiny_50_IM_Aug_focal_decoder.py
+│       └── epoch_50_bd.pth                      (629 MB)
+└── CGI/
+    ├── CGI_model.py, Network/, utils/
+    └── weight/Paper_95.74_93.75_96.15_98.36.pth (443 MB)
+```
+
+放在別的地方也可以，用環境變數指定即可（見下方「設定」）。
+**這些專案是唯讀相依，本系統不會修改它們任何一個檔案。**
+
+檢查影片放在 `video/`：
+
+```
+code/video/video1.mp4
 ```
 
 ---
 
-## ⚙️ CGI 模組 <a id="cgi-module"></a>
+## 二、建立四個 conda 環境
 
-### 🛠️ 環境安裝 <a id="cgi-env"></a>
+`envs/*.requirements.txt` 是開發機上實際可運作的完整版本清單，可作為對照。
+以下是最小可運作的安裝步驟。
 
-本模組的依賴環境較為彈性，請依據執行時系統提示的缺少套件進行動態安裝。
-> 💡缺啥裝啥 by 峻逢學長
+### GNS（torch 1.11 + natten）
 
-### 💻 測試
+`natten` 必須用對應 torch/CUDA 版本的預編譯 wheel，**這是整套裡最容易卡住的一步**。
 
 ```bash
-python test.py
+conda create -y -n GNS python=3.8
+conda activate GNS
+pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 \
+    --extra-index-url https://download.pytorch.org/whl/cu113
+pip install https://www.shi-labs.com/natten/wheels/cu113/torch1.11/natten-0.14.4%2Btorch1110cu113-cp38-cp38-linux_x86_64.whl
+pip install timm==0.6.13 fastapi uvicorn pillow "numpy<2"
 ```
+
+### GIM（torch 2.0.1 + mmsegmentation）
+
+`mmsegmentation` 與 `mmdetection` **要從 GIM 專案內附的原始碼樹安裝**（它們的版本
+與 config 綁死，pip 上的版本裝了不一定能載入這個 checkpoint）：
+
+```bash
+conda create -y -n IM_web python=3.8
+conda activate IM_web
+pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
+pip install -U openmim
+mim install mmengine==0.10.7 "mmcv==2.0.0"
+
+# 從 GIM 專案內附的原始碼安裝（editable）
+pip install -e GIM/mmsegmentation-main    # mmseg 1.1.2
+pip install -e GIM/mmdetection            # mmdet 3.2.0
+
+pip install fastapi uvicorn pillow "numpy<2" timm
+```
+
+> GIM 的 config 會 `import mmdet.models`，所以 `mmdet` 是必要的，不能只裝 mmseg。
+
+### CGI（torch 2.0.1）
+
+```bash
+conda create -y -n cgi_env python=3.10
+conda activate cgi_env
+pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
+pip install fastapi uvicorn pillow "numpy<2"
+```
+
+### Gateway（純 CPU，不需要 torch）
+
+```bash
+conda create -y -n endo-gateway python=3.11
+conda activate endo-gateway
+pip install fastapi uvicorn httpx pydantic python-multipart
+```
+
+> `python-multipart` 是影片上傳需要的，少了它 `POST /api/videos` 會失敗。
+
+### 前端
+
+```bash
+cd frontend && npm install
+```
+
+---
+
+## 三、啟動
+
+```bash
+bash scripts/start_services.sh     # 四支服務，log 在 logs/
+cd frontend && npm run dev         # http://localhost:5173
+```
+
+`start_services.sh` 會等模型載入完成並印出健康狀態，應該看到：
+
+```json
+{"gateway":true,"gns":true,"gim":true,"cgi":true}
+```
+
+關閉：
+
+```bash
+bash scripts/stop_services.sh
+```
+
+### 使用
+
+1. 開 <http://localhost:5173> → 選一支影片，或把影片拖進上傳區
+   （存進 `VIDEO_DIR`，上傳完成即自動建立 session 並進入檢視頁）
+2. 背景會依序執行：ffmpeg 裁切抽幀 → GNS 全片分類 → GIM 對 NBI 幀分割，
+   每算完一批就即時推送到畫面上
+3. **不必等掃描完成**。播放或拖到掃描還沒走到的位置時，第一頁會就地送那一幀去
+   推論，控制列出現 `LIVE` 標記與當次延遲。結果會寫回 session，
+   背景掃描之後會跳過它
+4. 掃描完成後 session 轉為 `ready`，`/report` 頁會自動收到事件並接手
+
+實測 `video1.mp4`（14 分鐘 / 60 fps / 2.5 GB）在 RTX 4090 上：
+
+| 取樣設定 | 幀數 | 全片掃描 | session 大小 |
+|---|---|---|---|
+| `15 / 15 / 5` | 12,614 | 4.6 分 | 1.0 GB |
+| `60 / 60 / 60`（目前預設） | 50,455 | 約 27 分 | 約 4.0 GB |
+
+隨選推論的延遲與取樣設定無關：
+
+| 情況 | 延遲 |
+|---|---|
+| 該幀已抽出（抽幀完成後的常態） | **25–30 ms** |
+| 該幀還沒抽到，需 ffmpeg 單幀 seek | 190–300 ms，與跳到影片多深處無關 |
+
+抽幀本身很快（60 秒影片約 2.1 秒），所以第二種情況只會出現在 session 剛建立的
+前幾十秒。
+
+---
+
+## 設定
+
+全部透過環境變數覆寫，預設值見 [`backend/config.py`](backend/config.py)。
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
+| `GNS_ROOT` / `GIM_ROOT` / `CGI_ROOT` | `./GNS` `./GIM` `./CGI` | 外部模型專案位置 |
+| `GNS_WEIGHT` / `GIM_WEIGHT` / `CGI_WEIGHT` | 各專案內 | 權重檔路徑 |
+| `GIM_CONFIG` | `GIM/model/…focal_decoder.py` | mmseg config |
+| `VIDEO_DIR` | `./video` | 影片來源目錄，也是 `/media` 串流的根 |
+| `SESSION_DIR` | `./backend/sessions` | 抽出的幀、mask 與 manifest |
+| `GATEWAY_PORT` | `8080` | |
+| `GNS_URL` / `GIM_URL` / `CGI_URL` | `127.0.0.1:8000/8001/8002` | |
+| `GNS_ENV` / `GIM_ENV` / `CGI_ENV` / `GATEWAY_ENV` | `GNS` `IM_web` `cgi_env` `endo-gateway` | 啟動腳本用的 conda 環境名 |
+
+### 取樣率
+
+取樣率是 per-session 的：建立 session 時可在 `POST /api/sessions` 的 `sampling`
+欄位指定，未指定則用 [`backend/protocol.py`](backend/protocol.py) 的 `Sampling`
+預設值，目前是 **`extract_fps=60, gns_fps=60, gim_fps=60`**。
+
+| 參數 | 影響 |
+|------|------|
+| `extract_fps` | 抽幀密度。同時決定隨選推論能對到多精準的一幀（60 = 對到螢幕上那一幀） |
+| `gns_fps` | 部位分類密度。設得比 `extract_fps` 高沒有意義 |
+| `gim_fps` | IM 分割密度，且只作用在 NBI 幀上 |
+
+改預設值要重啟 gateway。已經建立的 session 會保留當初的設定，不受影響。
+
+`60/60/60` 換來的是最密的時間軸，代價是全片掃描約 27 分鐘、4 GB
+（見上表）。`gim_fps` 是其中最貴而回報最低的一項——GIM 全片只在極少數幀上有
+反應，而畫面上的疊圖現在也走隨選推論，不依賴掃描進度。
+
+---
+
+## 專案結構
+
+```
+backend/
+  config.py              外部相依路徑與服務位址
+  protocol.py            契約的 Python 實作（含 G1–G6 → 部位對應表、取樣預設值）
+  gateway.py             :8080  上傳、抽幀、掃描排程、隨選推論、SSE、CGI 代理
+  servers/
+    gns_server.py        :8000  在 GNS 環境執行
+    gim_server.py        :8001  在 IM_web 環境執行，回傳 ROI 座標系的 RGBA mask
+    cgi_server.py        :8002  在 cgi_env 環境執行
+  sessions/              每個 session 的 manifest、幀、mask（不進 git）
+frontend/src/
+  protocol/              ★ 兩頁唯一的共享物，契約的 TypeScript 實作
+    index.ts             對外出口，兩頁都從這裡 import
+    types.ts             型別與部位標籤
+    client.ts            gateway 客戶端（含上傳、隨選推論、SSE 訂閱）
+    geometry.ts          ROI ↔ 螢幕座標換算，疊圖對齊的唯一來源
+    lookup.ts            以時間為鍵的幀查表
+  pages/live/            第一頁
+    LivePage.tsx         版面與播放控制
+    SessionPicker.tsx    選片／既有 session 列表
+    UploadPanel.tsx      影片上傳（拖放與檔案選擇）
+    ScopeStage.tsx       裁切到 ROI 的畫面與 mask 疊圖
+    SidePanel.tsx        部位、GNS 機率、當前幀資訊
+    AnatomyMap.tsx       部位示意圖
+    Timeline.tsx         部位色帶與 IM 標記
+    useSession.ts        session 狀態與掃描結果串流合併
+    useLiveAnalysis.ts   隨選推論（30 Hz、單飛行）
+  pages/report/          第二頁（空殼）
+docs/PROTOCOL.md         契約規格正本
+scripts/                 啟動與停止
+envs/                    各環境的完整套件版本紀錄
+```
+
+---
+
+## 疑難排解
+
+**`natten` 安裝失敗或 import 錯誤**
+必須用對應 `torch1.11 + cu113 + python3.8` 的 wheel，用 `pip install natten`
+會去編譯而通常失敗。網址見上方 GNS 安裝步驟。
+
+**`Numpy is not available`（torch 2.0.x）**
+numpy 2.x 與 torch 2.0.x 不相容，裝 `"numpy<2"`。
+
+**`/api/health` 顯示某個模型是 `false`**
+看 `logs/<name>.log`。常見原因是權重路徑不對，或該環境缺套件。
+
+**影片播不出來**
+`<video>` 的來源是 gateway 的 `/media`，只服務 `VIDEO_DIR` 底下的檔案。
+影片放在別處時 `media_url` 會是 `null`。
+
+**疊圖沒出現**
+GIM 只在 NBI 影像上訓練，白光幀的按鈕會置灰。即使是 NBI，也只有實際偵測到
+IM（score ≥ 1）的幀才有 mask —— `video1.mp4` 在 `15/15/5` 設定下，2,035 個
+NBI 取樣幀中只有 49 幀觸發。
+
+**上傳影片失敗**
+gateway 環境少裝 `python-multipart`。另外只接受 `.mp4 .avi .mov .mkv`，
+其餘副檔名會回 400。
+
+**部位標籤跳得很兇**
+目前是逐幀獨立 argmax，沒有任何時序平滑，實測每分鐘切換約 67 次。
+見「已知限制」。
+
+**掃描很久還沒好**
+正常。`60/60/60` 設定下全片約 27 分鐘。但掃描進度**不影響**畫面上的判讀——
+沒掃到的位置會即時推論。掃描只決定時間軸完整度與報告頁何時能開工。
+
+---
+
+## 已知限制
+
+- GNS 全片部位準確率約 80%（video1）／60%（video2），插入段、十二指腸、賁門最弱。
+- **部位判讀沒有時序平滑。** 每一幀獨立取 argmax，`video1.mp4` 全片切換 946 次
+  （每分鐘 67.5 次），其中 66% 的判定持續不到 0.2 秒。這不是模型準確率問題，
+  是缺少遲滯造成的。要修的話只需在 `gateway.py` 掃描完 GNS 後加一層平滑，
+  或在 `useLiveAnalysis` 的即時路徑上加，兩者都不會動到契約。
+- 因為上一點，部位圖的「已檢視」勾選資訊量很低——六個部位在前 135 秒就全部亮完。
+- GIM 訓練資料是放大內視鏡 NBI 近拍，廣角觀察畫面容易漏判。
+- `G1`–`G6` 對應到哪個解剖部位在論文與程式碼中都沒有記載，目前的對應表是
+  以醫師標註比對推得，定義在 `backend/protocol.py` 的 `REGION_MAP`。

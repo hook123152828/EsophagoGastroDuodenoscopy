@@ -1,27 +1,34 @@
-# Node / build
-node_modules/
-dist/
-*.tsbuildinfo
+# External model projects — read-only dependencies, fetched separately.
+# Their weights alone are >3GB, well past GitHub's file limits. See README.md.
+/CGI/
+/GIM/
+/GNS/
+
+# Procedure videos (multi-GB) and their annotation sheets
+/video/
+
+# Model weights anywhere
+*.pth
+*.pt
+*.onnx
+
+# Runtime artifacts
+/backend/sessions/*
+!/backend/sessions/.gitkeep
+/logs/
+*.pid
 
 # Python
 __pycache__/
 *.pyc
 
-# Large model projects (multi-GB weights, read-only reference) — delivered via
-# the bundle zip, not git. Their .pth files exceed GitHub's 100MB limit.
-/CGI/
-/GNS/
-/GIM/
+# Node / build
+node_modules/
+dist/
+*.tsbuildinfo
 
-# Stray model weights anywhere
-*.pth
-*.pt
-*.onnx
-*.engine
-
-# Runtime / local artifacts
-/logs/*.log
-backend/data/*.db
+# Tooling
 .playwright-mcp/
-*.zip
-/video/
+*.png
+!docs/*.png
+.vscode/

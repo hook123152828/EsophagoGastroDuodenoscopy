@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+/*
+ * Two pages, two visual languages, one shared shell.
+ *
+ * Page 1 (/live) imitates the endoscope console: near-black, high contrast,
+ * so nothing competes with the mucosa. Page 2 (/report) is a light clinical
+ * document meant to be read and printed.
+ */
+@theme {
+  --color-console-bg: #07090c;
+  --color-console-panel: #10141a;
+  --color-console-line: #1e2530;
+  --color-console-text: #e6ecf2;
+  --color-console-muted: #7c8896;
+
+  --color-scope-accent: #38bdf8;
+  --color-scope-alert: #b4444e;
+  --color-im: #a855f7;
+
+  --color-region-esophagus: #60a5fa;
+  --color-region-cardia: #a78bfa;
+  --color-region-body: #34d399;
+  --color-region-angle: #fbbf24;
+  --color-region-antrum: #fb923c;
+  --color-region-duodenum: #f472b6;
+  --color-region-unknown: #475569;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, 'Noto Sans TC', sans-serif;
+  font-variant-numeric: tabular-nums;
+}
