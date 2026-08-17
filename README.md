@@ -264,6 +264,13 @@ numpy 2.x 與 torch 2.0.x 不相容，裝 `"numpy<2"`。
 
 **`/api/health` 顯示某個模型是 `false`**
 看 `logs/<name>.log`。常見原因是權重路徑不對，或該環境缺套件。
+`start_services.sh` 會等每一支服務就緒，任一支啟動失敗時直接印出它的錯誤尾巴
+並以非零狀態結束，不會空等。
+
+**服務啟動後 port 被佔用、或 `stop_services.sh` 停不掉**
+`start_services.sh` 每次都會先呼叫 `stop_services.sh` 清場，所以重複執行是安全的。
+若曾用其他方式手動啟動過而留下孤兒，`stop_services.sh` 除了讀 `logs/*.pid`，
+也會掃描 8000/8001/8002/8080 這幾個 port 並關掉還在監聽的 process。
 
 **影片播不出來**
 `<video>` 的來源是 gateway 的 `/media`，只服務 `VIDEO_DIR` 底下的檔案。
