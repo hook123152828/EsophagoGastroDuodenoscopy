@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useState, type RefObject } from 'react'
 
 import {
   fileUrl,
@@ -32,7 +32,10 @@ export default function ScopeStage({
   maskFrame,
   showMask,
 }: Props) {
-  const boxRef = useRef<HTMLDivElement>(null)
+  // A callback ref rather than useRef: the box is remounted when the page
+  // rearranges (layout mode), and a plain ref would leave the observer watching
+  // the detached element, freezing the stage at its last size.
+  const [box, setBox] = useState<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<{ width: number; height: number } | null>(null)
   const [videoStyle, setVideoStyle] = useState<React.CSSProperties>({
     visibility: 'hidden',
@@ -44,7 +47,6 @@ export default function ScopeStage({
   // guarantees the stage never overflows its share of the layout.
   useEffect(() => {
     const video = videoRef.current
-    const box = boxRef.current
     if (!video || !box) return
 
     const update = () => {
@@ -75,7 +77,7 @@ export default function ScopeStage({
       observer.disconnect()
       video.removeEventListener('loadedmetadata', update)
     }
-  }, [videoRef, manifest.roi])
+  }, [videoRef, manifest.roi, box])
 
   const modality = frame?.gns?.modality ?? null
   const region = frame?.gns?.region ?? 'unknown'
@@ -84,7 +86,7 @@ export default function ScopeStage({
   const maskVisible = showMask && Boolean(maskFrame?.gim?.mask_url)
 
   return (
-    <div ref={boxRef} className="flex h-full w-full items-center justify-center">
+    <div ref={setBox} className="flex h-full w-full items-center justify-center">
       <div
         style={stage ? { width: stage.width, height: stage.height } : undefined}
         className={`relative overflow-hidden rounded-lg border-2 bg-black transition-colors ${

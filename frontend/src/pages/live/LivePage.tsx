@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 
 import { frameAt, gimFrameAt, type RegionId } from '@/protocol'
 
+import { LayoutBlock, LayoutCanvas, useLayoutEditor } from './LayoutCanvas'
 import ScopeStage from './ScopeStage'
 import SessionPicker from './SessionPicker'
 import SidePanel from './SidePanel'
@@ -63,6 +64,8 @@ export default function LivePage() {
     }
     return seen
   }, [frames, currentTime])
+
+  const layout = useLayoutEditor(DEFAULT_LAYOUT)
 
   if (!sessionId) {
     return (
@@ -134,11 +137,13 @@ export default function LivePage() {
 
       {/* Grid rather than flex: minmax(0, …fr) holds the 2:1 exactly, where flex
           basis still yields to the panel's content minimum. */}
+      <LayoutCanvas layout={layout}>
       <div
         style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)' }}
         className="grid min-h-0 flex-1"
       >
         <div className="flex min-w-0 flex-col gap-3 p-4">
+          <LayoutBlock id="stage" label="Video">
           <div className="flex min-h-0 flex-1 items-center justify-center">
             <ScopeStage
               manifest={manifest}
@@ -148,14 +153,18 @@ export default function LivePage() {
               showMask={showMask}
             />
           </div>
+          </LayoutBlock>
 
+          <LayoutBlock id="timeline" label="Timeline">
           <Timeline
             frames={frames}
             duration={manifest.video.duration_s}
             currentTime={currentTime}
             onSeek={seek}
           />
+          </LayoutBlock>
 
+          <LayoutBlock id="controls" label="Controls">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -200,12 +209,27 @@ export default function LivePage() {
                   : 'white-light imaging'}
             </span>
           </div>
+          </LayoutBlock>
         </div>
 
-        <SidePanel frame={frame} visited={visited} />
+        <LayoutBlock id="site" label="Site panel">
+          <SidePanel frame={frame} visited={visited} />
+        </LayoutBlock>
       </div>
+      </LayoutCanvas>
     </main>
   )
+}
+
+/**
+ * Starting arrangement for layout mode, as percentages of the canvas — the
+ * current production layout, so dragging starts from what is on screen.
+ */
+const DEFAULT_LAYOUT = {
+  stage: { x: 0, y: 0, w: 66, h: 78 },
+  timeline: { x: 0, y: 78, w: 66, h: 10 },
+  controls: { x: 0, y: 88, w: 66, h: 12 },
+  site: { x: 66, y: 0, w: 34, h: 100 },
 }
 
 function ScanProgress({ manifest }: { manifest: import('@/protocol').SessionManifest }) {
