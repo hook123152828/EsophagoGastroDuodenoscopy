@@ -135,41 +135,51 @@ export default function LivePage() {
         </div>
       </header>
 
-      {/* Grid rather than flex: minmax(0, …fr) holds the 2:1 exactly, where flex
-          basis still yields to the panel's content minimum. */}
+      {/* Three columns, with the video column split into stage and timeline.
+          minmax(0, …fr) rather than plain fr: a track's content minimum would
+          otherwise push the proportions off. */}
       <LayoutCanvas layout={layout}>
       <div
-        style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)' }}
+        style={{
+          gridTemplateColumns:
+            'minmax(0, 47.5fr) minmax(0, 18.5fr) minmax(0, 34fr)',
+        }}
         className="grid min-h-0 flex-1"
       >
-        <div className="flex min-w-0 flex-col gap-3 p-4">
+        <div
+          style={{ gridTemplateRows: 'minmax(0, 91.5fr) minmax(0, 8.5fr)' }}
+          className="grid min-w-0 gap-3 p-4"
+        >
           <LayoutBlock id="stage" label="Video">
-          <div className="flex min-h-0 flex-1 items-center justify-center">
-            <ScopeStage
-              manifest={manifest}
-              videoRef={videoRef}
-              frame={frame}
-              maskFrame={maskFrame}
-              showMask={showMask}
-            />
-          </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center">
+              <ScopeStage
+                manifest={manifest}
+                videoRef={videoRef}
+                frame={frame}
+                maskFrame={maskFrame}
+                showMask={showMask}
+              />
+            </div>
           </LayoutBlock>
 
           <LayoutBlock id="timeline" label="Timeline">
-          <Timeline
-            frames={frames}
-            duration={manifest.video.duration_s}
-            currentTime={currentTime}
-            onSeek={seek}
-          />
+            <div className="flex min-h-0 flex-1 flex-col justify-center">
+              <Timeline
+                frames={frames}
+                duration={manifest.video.duration_s}
+                currentTime={currentTime}
+                onSeek={seek}
+              />
+            </div>
           </LayoutBlock>
+        </div>
 
-          <LayoutBlock id="controls" label="Controls">
-          <div className="flex items-center gap-3">
+        <LayoutBlock id="controls" label="Controls">
+          <div className="flex min-w-0 flex-col gap-3 overflow-y-auto border-l border-console-line p-4">
             <button
               type="button"
               onClick={togglePlay}
-              className="rounded bg-console-panel px-5 py-2 text-sm transition hover:bg-console-line"
+              className="rounded bg-console-panel px-5 py-2.5 text-sm transition hover:bg-console-line"
             >
               {playing ? 'Pause' : 'Play'}
             </button>
@@ -179,7 +189,7 @@ export default function LivePage() {
               onClick={() => setShowMask((value) => !value)}
               disabled={!isNbi}
               title={isNbi ? undefined : 'GIM is only valid on NBI imaging'}
-              className={`rounded px-5 py-2 text-sm transition ${
+              className={`rounded px-5 py-2.5 text-sm transition ${
                 !isNbi
                   ? 'cursor-not-allowed bg-console-panel/50 text-console-muted/50'
                   : showMask
@@ -192,25 +202,26 @@ export default function LivePage() {
             </button>
 
             {live.active && (
-              <span className="flex items-center gap-2 rounded bg-scope-accent/10 px-3 py-1.5 text-sm text-scope-accent ring-1 ring-scope-accent/40">
+              <span className="flex items-center gap-2 rounded bg-scope-accent/10 px-3 py-2 text-sm text-scope-accent ring-1 ring-scope-accent/40">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-scope-accent" />
                 LIVE
                 {live.latencyMs !== null && (
-                  <span className="text-console-muted">{live.latencyMs} ms</span>
+                  <span className="ml-auto text-console-muted">
+                    {live.latencyMs} ms
+                  </span>
                 )}
               </span>
             )}
 
-            <span className="ml-auto text-sm text-console-muted">
+            <p className="text-sm leading-relaxed text-console-muted">
               {maskFrame?.gim
                 ? `overlay from t=${maskFrame.t.toFixed(2)}s`
                 : isNbi
                   ? 'no IM finding at this timestamp'
                   : 'white-light imaging'}
-            </span>
+            </p>
           </div>
-          </LayoutBlock>
-        </div>
+        </LayoutBlock>
 
         <LayoutBlock id="site" label="Site panel">
           <SidePanel frame={frame} visited={visited} />
@@ -226,9 +237,9 @@ export default function LivePage() {
  * current production layout, so dragging starts from what is on screen.
  */
 const DEFAULT_LAYOUT = {
-  stage: { x: 0, y: 0, w: 66, h: 78 },
-  timeline: { x: 0, y: 78, w: 66, h: 10 },
-  controls: { x: 0, y: 88, w: 66, h: 12 },
+  stage: { x: 0, y: 0, w: 47.5, h: 91.5 },
+  timeline: { x: 0, y: 91.5, w: 47.5, h: 8.5 },
+  controls: { x: 47.5, y: 0, w: 18.5, h: 100 },
   site: { x: 66, y: 0, w: 34, h: 100 },
 }
 
