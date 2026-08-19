@@ -7,6 +7,7 @@
 import type {
   CgiPair,
   FrameRecord,
+  GutCoreResult,
   SessionEvent,
   SessionManifest,
   Sampling,
@@ -156,4 +157,20 @@ export async function predictCgi(pools: {
     { method: 'POST', body: JSON.stringify(pools) },
   )
   return top_10_pairs
+}
+
+/**
+ * Run optional GutCore whole-examination gastric cancer analysis.
+ *
+ * Only session-owned frame indices cross the public API. The gateway resolves
+ * local paths and caches a result for the exact selection on disk.
+ */
+export function predictGutCore(
+  sessionId: string,
+  frameIndices: number[],
+): Promise<GutCoreResult> {
+  return request(`/api/sessions/${sessionId}/gutcore`, {
+    method: 'POST',
+    body: JSON.stringify({ frame_indices: frameIndices }),
+  })
 }

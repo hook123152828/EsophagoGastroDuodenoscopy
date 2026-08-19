@@ -3,7 +3,7 @@
 Owns the session lifecycle:
 
     extracting -> scanning -> ready
-                          \-> failed
+                          └─> failed
 
 It crops frames out of the console output with ffmpeg, runs GNS over them, runs
 GIM over the NBI ones, and publishes progress over SSE.  Page 1 creates
@@ -36,6 +36,7 @@ from backend.protocol import (
     FrameRecord,
     GimResult,
     GnsResult,
+    GutCoreRequest,
     Progress,
     Roi,
     Sampling,
@@ -57,6 +58,9 @@ class Session:
         # Serialises on-demand analysis so a misbehaving client cannot pile
         # unbounded concurrent inference onto the GPU.
         self.analyze_lock = asyncio.Lock()
+        # GutCore is substantially larger than the frame models. This also
+        # makes duplicate report requests share the on-disk cached result.
+        self.gutcore_lock = asyncio.Lock()
 
     @property
     def directory(self) -> Path:
@@ -390,10 +394,19 @@ async def health() -> dict:
             except httpx.RequestError:
                 return False
 
-        gns, gim, cgi = await asyncio.gather(
-            up(config.GNS_URL), up(config.GIM_URL), up(config.CGI_URL)
+        gns, gim, cgi, gutcore = await asyncio.gather(
+            up(config.GNS_URL),
+            up(config.GIM_URL),
+            up(config.CGI_URL),
+            up(config.GUTCORE_URL),
         )
-    return {"gateway": True, "gns": gns, "gim": gim, "cgi": cgi}
+    return {
+        "gateway": True,
+        "gns": gns,
+        "gim": gim,
+        "cgi": cgi,
+        "gutcore": gutcore,
+    }
 
 
 @app.get("/api/videos")
@@ -678,6 +691,84 @@ async def cgi_predict(request: CgiRequest) -> dict:
             return response.json()
     except httpx.HTTPError as error:
         raise HTTPException(502, f"CGI service error: {error}") from error
+
+
+@app.post("/api/sessions/{session_id}/gutcore")
+async def gutcore_predict(session_id: str, request: GutCoreRequest) -> dict:
+    """Run optional whole-case GutCore analysis over selected session frames.
+
+    The browser sends only frame indices. The gateway resolves those indices to
+    trusted local paths and maps the model's evidence back to public image URLs.
+    A result is cached per exact selection so refreshing the report is cheap.
+    """
+    session = _session(session_id)
+    if session.manifest.status != "ready":
+        raise HTTPException(409, "GutCore analysis requires a completed scan")
+
+    indices = list(dict.fromkeys(request.frame_indices))
+    if not indices:
+        raise HTTPException(400, "At least one frame index is required")
+    if len(indices) > 64:
+        raise HTTPException(400, "GutCore accepts at most 64 selected frames")
+    if any(index < 0 or index >= len(session.frames) for index in indices):
+        raise HTTPException(400, "GutCore frame index is outside this session")
+
+    missing = [index for index in indices if not frame_path(session, index).is_file()]
+    if missing:
+        raise HTTPException(409, f"GutCore frame {missing[0]} is not extracted")
+
+    cache_path = session.directory / "gutcore.json"
+    async with session.gutcore_lock:
+        if cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text())
+                if cached.get("input_frame_indices") == indices:
+                    return cached
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        payload = {
+            "items": [
+                {"frame_index": index, "path": str(frame_path(session, index))}
+                for index in indices
+            ]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                response = await client.post(
+                    f"{config.GUTCORE_URL}/predict", json=payload
+                )
+                response.raise_for_status()
+                model_result = response.json()
+        except httpx.HTTPError as error:
+            raise HTTPException(502, f"GutCore service error: {error}") from error
+
+        evidence = []
+        for item in model_result.get("evidence", []):
+            index = item["frame_index"]
+            frame = session.frames[index]
+            evidence.append(
+                {
+                    "frame_index": index,
+                    "t": frame.t,
+                    "image_url": frame.image_url,
+                    "region": frame.gns.region if frame.gns else "unknown",
+                    "contribution": item["contribution"],
+                }
+            )
+
+        result = {
+            **{key: value for key, value in model_result.items() if key != "evidence"},
+            "input_frame_indices": indices,
+            "evidence": evidence,
+        }
+        try:
+            cache_path.write_text(json.dumps(result, indent=2))
+        except OSError:
+            # A successful inference is still useful if this optional cache
+            # cannot be persisted (for example, a read-only session volume).
+            pass
+        return result
 
 
 if __name__ == "__main__":

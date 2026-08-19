@@ -6,8 +6,10 @@ import {
   getFrames,
   getSession,
   predictCgi,
+  predictGutCore,
   subscribeSession,
   type FrameRecord,
+  type GutCoreResult,
   type SessionManifest,
 } from '@/protocol'
 
@@ -17,6 +19,7 @@ import {
   jpegDataUrl,
   selectCgiCandidates,
   selectGimEvidence,
+  selectGutCoreCandidates,
   type CgiEvidence,
 } from './reportPipeline'
 
@@ -36,6 +39,15 @@ type CgiState =
 
 const INITIAL_CGI_STATE: CgiState = { status: 'waiting' }
 
+type GutCoreState =
+  | { status: 'waiting' }
+  | { status: 'running'; imageCount: number }
+  | { status: 'ready'; result: GutCoreResult }
+  | { status: 'unavailable'; message: string }
+  | { status: 'error'; message: string }
+
+const INITIAL_GUTCORE_STATE: GutCoreState = { status: 'waiting' }
+
 /**
  * Page 2 — report.
  *
@@ -50,6 +62,7 @@ export default function ReportPage() {
   const [pipelineState, setPipelineState] = useState('Waiting for session')
   const [pageError, setPageError] = useState<string | null>(null)
   const [cgi, setCgi] = useState<CgiState>(INITIAL_CGI_STATE)
+  const [gutcore, setGutcore] = useState<GutCoreState>(INITIAL_GUTCORE_STATE)
   const [showCgiFrames, setShowCgiFrames] = useState(false)
 
   // React StrictMode reconnects effects during development. This guard keeps a
@@ -65,6 +78,7 @@ export default function ReportPage() {
     setManifest(null)
     setFrames([])
     setCgi(INITIAL_CGI_STATE)
+    setGutcore(INITIAL_GUTCORE_STATE)
     setPageError(null)
     setShowCgiFrames(false)
     setPipelineState('Loading session')
@@ -78,6 +92,37 @@ export default function ReportPage() {
         const loaded = await getFrames(id)
         if (activeSession.current !== id) return
         setFrames(loaded)
+
+        // GutCore is optional and independent from CGI. Run it first so the
+        // two GPU-heavy report models do not execute concurrently. A failure here
+        // is contained to its own card and does not block the existing report.
+        const gutcoreCandidates = selectGutCoreCandidates(loaded)
+        if (gutcoreCandidates.length < 8) {
+          setGutcore({
+            status: 'unavailable',
+            message:
+              `Only ${gutcoreCandidates.length} anatomically classified frames ` +
+              'were available; GutCore recommends at least 8.',
+          })
+        } else {
+          setGutcore({ status: 'running', imageCount: gutcoreCandidates.length })
+          setPipelineState('Running GutCore whole-examination analysis')
+          try {
+            const result = await predictGutCore(
+              id,
+              gutcoreCandidates.map((frame) => frame.index),
+            )
+            if (activeSession.current !== id) return
+            setGutcore({ status: 'ready', result })
+          } catch (cause) {
+            if (activeSession.current !== id) return
+            const message = cause instanceof Error ? cause.message : String(cause)
+            setGutcore({
+              status: 'error',
+              message: `${message}. The optional GutCore service may not be installed.`,
+            })
+          }
+        }
 
         const candidateFrames = {
           antrum: selectCgiCandidates(loaded, 'antrum'),
@@ -270,6 +315,8 @@ export default function ReportPage() {
               evidence={summary.gimEvidence}
             />
 
+            <GutCoreSection state={gutcore} />
+
             <CgiSection state={cgi} onShowFrames={() => setShowCgiFrames(true)} />
           </>
         )}
@@ -424,6 +471,135 @@ function GimEvidenceCard({ frame }: { frame: FrameRecord }) {
         </span>
       </figcaption>
     </figure>
+  )
+}
+
+function GutCoreSection({ state }: { state: GutCoreState }) {
+  const result = state.status === 'ready' ? state.result : null
+  const isCancerPattern = result?.prediction === 'cancer'
+
+  return (
+    <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold tracking-widest text-rose-600 uppercase">
+            GutCore
+          </p>
+          <h2 className="mt-1 text-xl font-semibold">Whole-examination gastric cancer model</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Gated-attention analysis of representative images across the examination.
+          </p>
+        </div>
+
+        {result && (
+          <span
+            className={`rounded-full px-3 py-1.5 text-sm font-medium ring-1 ${
+              isCancerPattern
+                ? 'bg-rose-50 text-rose-700 ring-rose-200'
+                : 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+            }`}
+          >
+            {isCancerPattern ? 'Cancer-pattern output' : 'Non-cancer-pattern output'}
+          </span>
+        )}
+      </div>
+
+      {state.status === 'waiting' && (
+        <CgiMessage>Waiting for the full scan to finish.</CgiMessage>
+      )}
+      {state.status === 'running' && (
+        <CgiMessage>
+          Analysing {state.imageCount} representative examination images…
+        </CgiMessage>
+      )}
+      {state.status === 'unavailable' && (
+        <CgiMessage tone="warning">{state.message}</CgiMessage>
+      )}
+      {state.status === 'error' && (
+        <CgiMessage tone="warning">{state.message}</CgiMessage>
+      )}
+
+      {result && (
+        <>
+          <div className="mt-6 grid gap-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+            <div>
+              <div className="flex items-end gap-3">
+                <span
+                  className={`text-5xl font-semibold tracking-tight ${
+                    isCancerPattern ? 'text-rose-700' : 'text-emerald-700'
+                  }`}
+                >
+                  {(result.cancer_score * 100).toFixed(1)}%
+                </span>
+                <span className="pb-1 text-sm text-slate-500">uncalibrated model score</span>
+              </div>
+              <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={`h-full rounded-full ${
+                    isCancerPattern ? 'bg-rose-500' : 'bg-emerald-500'
+                  }`}
+                  style={{
+                    width: `${Math.max(0, Math.min(1, result.cancer_score)) * 100}%`,
+                  }}
+                />
+              </div>
+            </div>
+            <p className="text-sm text-slate-500 md:text-right">
+              {result.image_count} images analysed
+              <br />
+              Decision threshold {(result.threshold * 100).toFixed(0)}%
+            </p>
+          </div>
+
+          {result.warning && (
+            <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              {result.warning}
+            </div>
+          )}
+
+          {result.evidence.length > 0 && (
+            <div className="mt-6">
+              <h3 className="text-sm font-semibold text-slate-800">
+                Highest-contributing images
+              </h3>
+              <p className="mt-1 text-xs text-slate-500">
+                Contribution is relative attention within this submitted examination set.
+              </p>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                {result.evidence.map((item) => (
+                  <figure
+                    key={item.frame_index}
+                    className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950"
+                  >
+                    <img
+                      src={fileUrl(item.image_url)}
+                      alt={`GutCore evidence at ${formatTime(item.t)}`}
+                      className="aspect-[1000/871] w-full object-cover"
+                      loading="lazy"
+                    />
+                    <figcaption className="bg-white px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-500">{formatTime(item.t)}</span>
+                        <span className="font-medium text-rose-700">
+                          {(item.contribution * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                      <p className="mt-1 truncate text-slate-400">{item.region}</p>
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      <p className="mt-5 text-xs leading-relaxed text-slate-400">
+        Noncommercial research use only. This uncalibrated output is not absolute
+        clinical risk, is not a diagnosis, and must not replace endoscopic or
+        pathological assessment.
+      </p>
+    </section>
   )
 }
 

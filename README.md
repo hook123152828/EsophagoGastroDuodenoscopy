@@ -1,7 +1,7 @@
 # 上消化道內視鏡 AI 主控台
 
-把一支內視鏡檢查影片餵進三個 AI 模型，即時顯示目前檢查部位、疊上腸上皮化生
-（IM）分割結果，並把逐幀分析結果交給下游流程產生報告。
+把一支內視鏡檢查影片餵進三個既有 AI 模型，即時顯示目前檢查部位、疊上腸上皮
+化生（IM）分割結果，再由可選的 GutCore 對整次檢查產生胃癌模型分數與關鍵影像。
 
 判讀不需要等待：影片一載入就能邊播邊判，畫面跑到背景掃描還沒走到的地方時，
 系統會就地推論當下那一幀（約 25–30 ms）。
@@ -11,11 +11,12 @@
 | **GNS** (SGAFormer) | 解剖部位分類 | 16 類（食道／胃 G1–G6／十二指腸 × WL·NBI） |
 | **GIM** (Mask Focal Modulation Network) | IM 分割 | Mask2Former + FocalNet，**只在 NBI 影像上有效** |
 | **CGI** (GSCNet) | 胃體為主胃炎判別 | 吃三張白光影像（胃竇／胃體／賁門） |
+| **GutCore**（可選） | 整次檢查胃癌判別 | 多張影像 gated-attention；報告顯示未校準分數與高貢獻影像 |
 
 前端有兩個獨立開發的頁面，中間只有一層固定契約：
 
 - **`/live`** — 即時檢視：上傳／選片、播放、即時部位判讀、IM 疊圖開關、時間軸
-- **`/report`** — 報告：訂閱掃描完成事件後接手下游流程（**目前是空殼**）
+- **`/report`** — 報告：掃描完成後彙整 GIM、CGI 與可選的 GutCore 結果
 
 契約規格見 **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)**。要開發 `/report` 的人請先讀它。
 
@@ -29,14 +30,14 @@
 - `ffmpeg` 與 `ffprobe`
 - Node.js 20+
 
-三個模型的相依版本互不相容（torch 1.11 / 2.0 / 2.0），所以**各跑在自己的 conda
-環境**，透過 HTTP 溝通。這是刻意的設計，不要嘗試合併成一個環境。
+模型的相依版本互不相容（torch 1.11 / 2.0 / 2.0 / ≥2.6），所以**各跑在自己的
+conda 環境**，透過 HTTP 溝通。這是刻意的設計，不要嘗試合併成一個環境。
 
 ---
 
 ## 一、取得外部模型專案與權重
 
-三個模型專案**不在本 repo 內**（權重合計超過 3GB，遠超 GitHub 檔案上限）。
+模型專案**不在本 repo 內**（權重合計超過 GitHub 檔案上限）。
 請另行取得後放到以下位置：
 
 ```
@@ -50,9 +51,12 @@ code/
 │   └── model/
 │       ├── mask2former_FocalNet_tiny_50_IM_Aug_focal_decoder.py
 │       └── epoch_50_bd.pth                      (629 MB)
-└── CGI/
-    ├── CGI_model.py, Network/, utils/
-    └── weight/Paper_95.74_93.75_96.15_98.36.pth (443 MB)
+├── CGI/
+│   ├── CGI_model.py, Network/, utils/
+│   └── weight/Paper_95.74_93.75_96.15_98.36.pth (443 MB)
+└── GutCore/                                      （可選，官方專案）
+    ├── src/gutcore/
+    └── model_assets/GutCore-GC.pth              （可選的明確權重路徑）
 ```
 
 放在別的地方也可以，用環境變數指定即可（見下方「設定」）。
@@ -66,7 +70,7 @@ code/video/video1.mp4
 
 ---
 
-## 二、建立四個 conda 環境
+## 二、建立 conda 環境
 
 `envs/*.requirements.txt` 是開發機上實際可運作的完整版本清單，可作為對照。
 以下是最小可運作的安裝步驟。
@@ -114,6 +118,33 @@ pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorc
 pip install fastapi uvicorn pillow "numpy<2"
 ```
 
+### GutCore（可選，Python 3.11 / torch ≥2.6）
+
+GutCore 使用官方 [SMC-GutX/GutCore](https://github.com/SMC-GutX/GutCore)；請先確認其
+PolyForm Noncommercial 授權與 DINOv3 條款符合使用情境。它不是醫療器材，輸出也不是
+已校準的臨床風險。
+
+```bash
+git clone https://github.com/SMC-GutX/GutCore.git GutCore
+conda create -y -n gutcore_env python=3.11
+conda activate gutcore_env
+
+# 本專案的 CUDA 11.8 部署
+pip install torch==2.6.0 torchvision==0.21.0 \
+    --index-url https://download.pytorch.org/whl/cu118
+pip install -e GutCore
+pip install fastapi uvicorn
+
+# 先在 https://huggingface.co/SehunFromDaegu/GutCore 取得 gated model 存取權並登入
+hf auth login
+
+# 預先下載並驗證官方胃癌權重，避免服務啟動時才下載
+gutcore-download --model cancer
+```
+
+若權重放在其他位置，設定 `GUTCORE_WEIGHT=/absolute/path/GutCore-GC.pth`。沒有安裝
+GutCore 時啟動腳本會略過它，原本三個模型與報告其餘內容仍可使用。
+
 ### Gateway（純 CPU，不需要 torch）
 
 ```bash
@@ -135,15 +166,17 @@ cd frontend && npm install
 ## 三、啟動
 
 ```bash
-bash scripts/start_services.sh     # 四支服務，log 在 logs/
+bash scripts/start_services.sh     # 三個必要模型 + 可選 GutCore + gateway，log 在 logs/
 cd frontend && npm run dev         # http://localhost:5173
 ```
 
 `start_services.sh` 會等模型載入完成並印出健康狀態，應該看到：
 
 ```json
-{"gateway":true,"gns":true,"gim":true,"cgi":true}
+{"gateway":true,"gns":true,"gim":true,"cgi":true,"gutcore":true}
 ```
+
+未安裝可選服務時 `gutcore` 會是 `false`，這不是既有流程的啟動失敗。
 
 關閉：
 
@@ -160,14 +193,15 @@ bash scripts/stop_services.sh
 3. **不必等掃描完成**。播放或拖到掃描還沒走到的位置時，第一頁會就地送那一幀去
    推論，控制列出現 `LIVE` 標記與當次延遲。結果會寫回 session，
    背景掃描之後會跳過它
-4. 掃描完成後 session 轉為 `ready`，`/report` 頁會自動收到事件並接手
+4. 掃描完成後 session 轉為 `ready`，`/report` 頁會自動產生 GIM／CGI 摘要；若
+   GutCore 可用，另以跨解剖部位的代表幀做整次檢查分析並顯示關鍵影像
 
 實測 `video1.mp4`（14 分鐘 / 60 fps / 2.5 GB）在 RTX 4090 上：
 
 | 取樣設定 | 幀數 | 全片掃描 | session 大小 |
 |---|---|---|---|
 | `15 / 15 / 5` | 12,614 | 4.6 分 | 1.0 GB |
-| `60 / 60 / 60`（目前預設） | 50,455 | 約 27 分 | 約 4.0 GB |
+| `60 / 60 / 60`（高密度選項） | 50,455 | 約 27 分 | 約 4.0 GB |
 
 隨選推論的延遲與取樣設定無關：
 
@@ -187,20 +221,21 @@ bash scripts/stop_services.sh
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `GNS_ROOT` / `GIM_ROOT` / `CGI_ROOT` | `./GNS` `./GIM` `./CGI` | 外部模型專案位置 |
-| `GNS_WEIGHT` / `GIM_WEIGHT` / `CGI_WEIGHT` | 各專案內 | 權重檔路徑 |
+| `GNS_ROOT` / `GIM_ROOT` / `CGI_ROOT` / `GUTCORE_ROOT` | 各專案同名目錄 | 外部模型專案位置 |
+| `GNS_WEIGHT` / `GIM_WEIGHT` / `CGI_WEIGHT` / `GUTCORE_WEIGHT` | 各專案內 | 權重檔路徑 |
 | `GIM_CONFIG` | `GIM/model/…focal_decoder.py` | mmseg config |
 | `VIDEO_DIR` | `./video` | 影片來源目錄，也是 `/media` 串流的根 |
 | `SESSION_DIR` | `./backend/sessions` | 抽出的幀、mask 與 manifest |
 | `GATEWAY_PORT` | `8080` | |
-| `GNS_URL` / `GIM_URL` / `CGI_URL` | `127.0.0.1:8000/8001/8002` | |
-| `GNS_ENV` / `GIM_ENV` / `CGI_ENV` / `GATEWAY_ENV` | `GNS` `IM_web` `cgi_env` `endo-gateway` | 啟動腳本用的 conda 環境名 |
+| `GNS_URL` / `GIM_URL` / `CGI_URL` / `GUTCORE_URL` | `127.0.0.1:8000/8001/8002/8003` | |
+| `GNS_ENV` / `GIM_ENV` / `CGI_ENV` / `GUTCORE_ENV` / `GATEWAY_ENV` | `GNS` `IM_web` `cgi_env` `gutcore_env` `endo-gateway` | 啟動腳本用的 conda 環境名 |
+| `GUTCORE_DEVICE` / `GUTCORE_BATCH` / `GUTCORE_TOP_K` | `auto` / `4` / `5` | GutCore 裝置、編碼批次與報告關鍵影像數 |
 
 ### 取樣率
 
 取樣率是 per-session 的：建立 session 時可在 `POST /api/sessions` 的 `sampling`
 欄位指定，未指定則用 [`backend/protocol.py`](backend/protocol.py) 的 `Sampling`
-預設值，目前是 **`extract_fps=60, gns_fps=60, gim_fps=60`**。
+預設值，目前是 **`extract_fps=15, gns_fps=15, gim_fps=5`**。
 
 | 參數 | 影響 |
 |------|------|
@@ -210,7 +245,7 @@ bash scripts/stop_services.sh
 
 改預設值要重啟 gateway。已經建立的 session 會保留當初的設定，不受影響。
 
-`60/60/60` 換來的是最密的時間軸，代價是全片掃描約 27 分鐘、4 GB
+`60/60/60` 可換來更密的時間軸，代價是全片掃描約 27 分鐘、4 GB
 （見上表）。`gim_fps` 是其中最貴而回報最低的一項——GIM 全片只在極少數幀上有
 反應，而畫面上的疊圖現在也走隨選推論，不依賴掃描進度。
 
@@ -222,11 +257,12 @@ bash scripts/stop_services.sh
 backend/
   config.py              外部相依路徑與服務位址
   protocol.py            契約的 Python 實作（含 G1–G6 → 部位對應表、取樣預設值）
-  gateway.py             :8080  上傳、抽幀、掃描排程、隨選推論、SSE、CGI 代理
+  gateway.py             :8080  上傳、抽幀、掃描排程、SSE、CGI／GutCore 代理
   servers/
     gns_server.py        :8000  在 GNS 環境執行
     gim_server.py        :8001  在 IM_web 環境執行，回傳 ROI 座標系的 RGBA mask
     cgi_server.py        :8002  在 cgi_env 環境執行
+    gutcore_server.py    :8003  可選；在 gutcore_env 執行整次檢查分析
   sessions/              每個 session 的 manifest、幀、mask（不進 git）
 frontend/src/
   protocol/              ★ 兩頁唯一的共享物，契約的 TypeScript 實作
@@ -245,7 +281,7 @@ frontend/src/
     Timeline.tsx         部位色帶與 IM 標記
     useSession.ts        session 狀態與掃描結果串流合併
     useLiveAnalysis.ts   隨選推論（30 Hz、單飛行）
-  pages/report/          第二頁（空殼）
+  pages/report/          第二頁：GIM／CGI／GutCore 報告與證據影像
 docs/PROTOCOL.md         契約規格正本
 scripts/                 啟動與停止
 envs/                    各環境的完整套件版本紀錄
@@ -264,6 +300,13 @@ numpy 2.x 與 torch 2.0.x 不相容，裝 `"numpy<2"`。
 
 **`/api/health` 顯示某個模型是 `false`**
 看 `logs/<name>.log`。常見原因是權重路徑不對，或該環境缺套件。
+GutCore 是可選服務；尚未安裝時顯示 `false` 屬預期行為。
+
+**報告顯示 GutCore service error**
+確認 `GutCore/src/gutcore`、`gutcore_env` 與官方 cancer checkpoint 都已就緒，再看
+`logs/gutcore.log`。權重是 gated model，HTTP 401 時需先在官方 Hugging Face 模型頁
+取得權限並執行 `hf auth login`。若剛補好環境，需要重新執行
+`scripts/start_services.sh`。
 
 **影片播不出來**
 `<video>` 的來源是 gateway 的 `/media`，只服務 `VIDEO_DIR` 底下的檔案。
@@ -297,5 +340,8 @@ gateway 環境少裝 `python-multipart`。另外只接受 `.mp4 .avi .mov .mkv`�
   或在 `useLiveAnalysis` 的即時路徑上加，兩者都不會動到契約。
 - 因為上一點，部位圖的「已檢視」勾選資訊量很低——六個部位在前 135 秒就全部亮完。
 - GIM 訓練資料是放大內視鏡 NBI 近拍，廣角觀察畫面容易漏判。
+- GutCore report 使用每個解剖部位最多 5 張、全檢查最多 30 張代表幀，這是從影片近似
+  官方「一次檢查的已儲存影像集合」輸入；其未校準分數只能作研究輔助，不能當成
+  絕對癌症風險或取代內視鏡／病理判讀。
 - `G1`–`G6` 對應到哪個解剖部位在論文與程式碼中都沒有記載，目前的對應表是
   以醫師標註比對推得，定義在 `backend/protocol.py` 的 `REGION_MAP`。

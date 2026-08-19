@@ -1,0 +1,10 @@
+# Install PyTorch/torchvision from the CUDA index appropriate for the host first.
+# Then install the official GutCore project editable; these are its runtime
+# ranges plus the small HTTP wrapper used by this repository.
+huggingface-hub>=0.25,<1.0
+numpy>=1.26
+pillow>=10.4
+torch==2.6.0+cu118
+torchvision==0.21.0+cu118
+fastapi
+uvicorn

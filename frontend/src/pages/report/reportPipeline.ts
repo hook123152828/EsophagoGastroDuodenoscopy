@@ -9,6 +9,18 @@ const CGI_POOL_SIZE = 4
 const CGI_MIN_GAP_S = 2
 const GIM_EVIDENCE_SIZE = 6
 const GIM_MIN_GAP_S = 1
+const GUTCORE_PER_REGION = 5
+const GUTCORE_MAX_IMAGES = 30
+const GUTCORE_MIN_GAP_S = 1
+
+const GUTCORE_REGIONS: RegionId[] = [
+  'esophagus',
+  'cardia',
+  'body',
+  'angle',
+  'antrum',
+  'duodenum',
+]
 
 export type CgiRegion = Extract<RegionId, 'antrum' | 'body' | 'cardia'>
 
@@ -84,6 +96,55 @@ export function selectGimEvidence(frames: FrameRecord[]): FrameRecord[] {
     }
   }
   return selected.sort((left, right) => left.t - right.t)
+}
+
+/**
+ * Approximate GutCore's stored whole-examination input from a dense video.
+ *
+ * Five temporally diverse frames per anatomical region yields up to 30 images,
+ * close to the examination size used by the released model, without uploading
+ * thousands of near-identical video frames. Both WL and NBI are retained: the
+ * official model consumes all stored RGB images from an examination.
+ */
+export function selectGutCoreCandidates(frames: FrameRecord[]): FrameRecord[] {
+  const selected: FrameRecord[] = []
+
+  for (const region of GUTCORE_REGIONS) {
+    const candidates = frames.filter((frame) => frame.gns?.region === region)
+    selected.push(
+      ...selectEvenlySpaced(candidates, GUTCORE_PER_REGION, GUTCORE_MIN_GAP_S),
+    )
+  }
+
+  return selected
+    .sort((left, right) => left.t - right.t)
+    .slice(0, GUTCORE_MAX_IMAGES)
+}
+
+function selectEvenlySpaced(
+  frames: FrameRecord[],
+  limit: number,
+  minGapSeconds: number,
+): FrameRecord[] {
+  if (frames.length === 0 || limit <= 0) return []
+
+  const temporallyDistinct: FrameRecord[] = []
+  for (const frame of frames) {
+    const previous = temporallyDistinct[temporallyDistinct.length - 1]
+    if (!previous || frame.t - previous.t >= minGapSeconds) {
+      temporallyDistinct.push(frame)
+    }
+  }
+
+  if (temporallyDistinct.length <= limit) return temporallyDistinct
+  if (limit === 1) return [temporallyDistinct[Math.floor(temporallyDistinct.length / 2)]]
+
+  return Array.from({ length: limit }, (_, index) => {
+    const position = Math.round(
+      (index * (temporallyDistinct.length - 1)) / (limit - 1),
+    )
+    return temporallyDistinct[position]
+  })
 }
 
 export async function encodeCgiPools(frames: FrameRecord[]): Promise<CgiPools> {

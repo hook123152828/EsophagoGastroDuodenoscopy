@@ -1,6 +1,6 @@
 """Runtime configuration.
 
-The three model projects (GNS / GIM / CGI) are *external read-only dependencies*
+The model projects (GNS / GIM / CGI / GutCore) are *external read-only dependencies*
 — they are not part of this repository and are never modified.  Their locations
 are injected here so the servers can put them on ``sys.path`` and load weights.
 
@@ -24,6 +24,7 @@ def _path(name: str, default: Path) -> Path:
 GNS_ROOT = _path("GNS_ROOT", REPO_ROOT / "GNS")
 GIM_ROOT = _path("GIM_ROOT", REPO_ROOT / "GIM")
 CGI_ROOT = _path("CGI_ROOT", REPO_ROOT / "CGI")
+GUTCORE_ROOT = _path("GUTCORE_ROOT", REPO_ROOT / "GutCore")
 
 GNS_WEIGHT = _path("GNS_WEIGHT", GNS_ROOT / "weights" / "best_94.0050_AIGNS.pth")
 GIM_CONFIG = _path(
@@ -33,6 +34,9 @@ GIM_CONFIG = _path(
 GIM_WEIGHT = _path("GIM_WEIGHT", GIM_ROOT / "model" / "epoch_50_bd.pth")
 CGI_WEIGHT = _path(
     "CGI_WEIGHT", CGI_ROOT / "weight" / "Paper_95.74_93.75_96.15_98.36.pth"
+)
+GUTCORE_WEIGHT = _path(
+    "GUTCORE_WEIGHT", GUTCORE_ROOT / "model_assets" / "GutCore-GC.pth"
 )
 
 # --- Data --------------------------------------------------------------------
@@ -44,6 +48,7 @@ GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8080"))
 GNS_URL = os.getenv("GNS_URL", "http://127.0.0.1:8000").rstrip("/")
 GIM_URL = os.getenv("GIM_URL", "http://127.0.0.1:8001").rstrip("/")
 CGI_URL = os.getenv("CGI_URL", "http://127.0.0.1:8002").rstrip("/")
+GUTCORE_URL = os.getenv("GUTCORE_URL", "http://127.0.0.1:8003").rstrip("/")
 
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
@@ -86,3 +91,9 @@ def missing_binaries() -> List[str]:
 # Batch size for GNS; the model runs at ~500 fps on an RTX 4090 so this is
 # bounded by JPEG decoding rather than by the GPU.
 GNS_BATCH = int(os.getenv("GNS_BATCH", "32"))
+
+# GutCore is a ViT-L model and shares the GPU with the three existing services.
+# A conservative default keeps its peak inference allocation predictable.
+GUTCORE_DEVICE = os.getenv("GUTCORE_DEVICE", "auto")
+GUTCORE_BATCH = int(os.getenv("GUTCORE_BATCH", "4"))
+GUTCORE_TOP_K = int(os.getenv("GUTCORE_TOP_K", "5"))

@@ -112,6 +112,29 @@ export interface CgiPair {
   img3: string
 }
 
+export interface GutCoreEvidence {
+  frame_index: number
+  t: number
+  image_url: string
+  region: RegionId
+  /** Relative gated-attention weight among all submitted examination images. */
+  contribution: number
+}
+
+export interface GutCoreResult {
+  prediction: 'cancer' | 'non-cancer'
+  /** Uncalibrated softmax model output; this is not absolute clinical risk. */
+  cancer_score: number
+  threshold: number
+  score_is_calibrated: false
+  research_only: true
+  image_count: number
+  recommended_minimum: number
+  warning: string | null
+  input_frame_indices: number[]
+  evidence: GutCoreEvidence[]
+}
+
 /** Display order used by both pages, proximal to distal. */
 export const REGION_ORDER: RegionId[] = [
   'esophagus',

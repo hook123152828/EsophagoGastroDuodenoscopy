@@ -295,6 +295,42 @@ CGI 是 corpus-predominant gastritis 模型，輸入為
 **三張白光影像：antrum (A) / body (B) / cardia (C)**。
 論文所稱 cardia 實際指 high/upper corpus。三池都應只取 `modality === 'WL'` 的幀。
 
+### `POST /api/sessions/{id}/gutcore` ← 第二頁專用、可選
+
+在已完成的 session 上執行 GutCore 整次檢查胃癌模型。前端只送 session 內的幀索引，
+gateway 會解析成可信任的本機路徑；最多 64 張。相同幀選擇的結果會快取在 session。
+
+```jsonc
+// request
+{ "frame_indices": [15, 320, 801, 1260, 2400, 3901, 5120, 7200] }
+
+// response
+{
+  "prediction": "cancer",             // cancer | non-cancer
+  "cancer_score": 0.73,                // 未校準，不是絕對臨床風險
+  "threshold": 0.5,
+  "score_is_calibrated": false,
+  "research_only": true,
+  "image_count": 8,
+  "recommended_minimum": 8,
+  "warning": null,
+  "input_frame_indices": [15, 320, 801, 1260, 2400, 3901, 5120, 7200],
+  "evidence": [
+    {
+      "frame_index": 2400,
+      "t": 160.0,
+      "image_url": "/files/{id}/frames/002400.jpg",
+      "region": "body",
+      "contribution": 0.21
+    }
+  ]
+}
+```
+
+`evidence.contribution` 是該張影像在這次提交集合中的相對 gated-attention 權重，不是
+病灶機率或定位框。GutCore 服務未安裝時此 endpoint 回 502，但不影響 CGI、GIM 或
+既有 session 報告內容。
+
 ### 靜態檔
 - `GET /files/{session_id}/frames/{index:06d}.jpg`
 - `GET /files/{session_id}/masks/{index:06d}.png`

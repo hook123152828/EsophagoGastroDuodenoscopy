@@ -66,9 +66,9 @@ class Roi(BaseModel):
 
 
 class Sampling(BaseModel):
-    extract_fps: float = 60
-    gns_fps: float = 60
-    gim_fps: float = 60
+    extract_fps: float = 15
+    gns_fps: float = 15
+    gim_fps: float = 5
 
 
 class VideoInfo(BaseModel):
@@ -139,3 +139,9 @@ class CgiRequest(BaseModel):
     pool_A: List[str]
     pool_B: List[str]
     pool_C: List[str]
+
+
+class GutCoreRequest(BaseModel):
+    """Run whole-case GutCore analysis over frames owned by this session."""
+
+    frame_indices: List[int]

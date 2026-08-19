@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the three model microservices and the gateway.
+# Start the three required model microservices, optional GutCore, and gateway.
 # Each model runs in its own conda environment; override the names below if
 # yours differ.  Logs land in logs/.
 set -euo pipefail
@@ -10,8 +10,10 @@ cd "$ROOT"
 GNS_ENV="${GNS_ENV:-GNS}"
 GIM_ENV="${GIM_ENV:-IM_web}"
 CGI_ENV="${CGI_ENV:-cgi_env}"
+GUTCORE_ENV="${GUTCORE_ENV:-gutcore_env}"
 GATEWAY_ENV="${GATEWAY_ENV:-endo-gateway}"
 CONDA_BASE="${CONDA_BASE:-$(conda info --base)}"
+GUTCORE_ROOT="${GUTCORE_ROOT:-$ROOT/GutCore}"
 
 mkdir -p logs
 export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
@@ -33,6 +35,17 @@ echo "starting services..."
 launch "$GNS_ENV"     backend.servers.gns_server gns
 launch "$GIM_ENV"     backend.servers.gim_server gim
 launch "$CGI_ENV"     backend.servers.cgi_server cgi
+
+# GutCore is deliberately optional so existing installations keep starting
+# unchanged. Once its environment and external source tree exist, it is picked
+# up automatically; weight resolution is handled by the official package.
+if [[ -x "$CONDA_BASE/envs/$GUTCORE_ENV/bin/python" && -d "$GUTCORE_ROOT/src/gutcore" ]]; then
+  export GUTCORE_ROOT
+  launch "$GUTCORE_ENV" backend.servers.gutcore_server gutcore
+else
+  echo "   gutcore skipped (optional; see README.md)"
+fi
+
 launch "$GATEWAY_ENV" backend.gateway            gateway
 
 echo
