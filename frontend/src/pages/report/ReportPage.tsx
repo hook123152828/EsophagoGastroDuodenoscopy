@@ -6,14 +6,17 @@ import {
   getFrames,
   getSession,
   predictCgi,
+  REGION_LABEL,
   subscribeSession,
   type FrameRecord,
   type SessionManifest,
 } from '@/protocol'
 
 import {
+  buildGimEpisodes,
   encodeCgiPools,
   evidenceForPair,
+  hasValidGimResult,
   jpegDataUrl,
   selectCgiCandidates,
   selectGimEvidence,
@@ -50,7 +53,6 @@ export default function ReportPage() {
   const [pipelineState, setPipelineState] = useState('Waiting for session')
   const [pageError, setPageError] = useState<string | null>(null)
   const [cgi, setCgi] = useState<CgiState>(INITIAL_CGI_STATE)
-  const [showCgiFrames, setShowCgiFrames] = useState(false)
 
   // React StrictMode reconnects effects during development. This guard keeps a
   // replayed ready event from running the expensive CGI pipeline twice.
@@ -66,7 +68,6 @@ export default function ReportPage() {
     setFrames([])
     setCgi(INITIAL_CGI_STATE)
     setPageError(null)
-    setShowCgiFrames(false)
     setPipelineState('Loading session')
 
     async function buildReport() {
@@ -101,6 +102,18 @@ export default function ReportPage() {
         setPipelineState('Preparing CGI candidate frames')
         const pools = await encodeCgiPools(loaded)
         if (activeSession.current !== id) return
+
+        const qualityMissing = (['antrum', 'body', 'cardia'] as const).filter(
+          (region) => pools[region].length === 0,
+        )
+        if (qualityMissing.length > 0) {
+          setCgi({
+            status: 'unavailable',
+            message: `No quality-approved white-light candidate for: ${qualityMissing.join(', ')}`,
+          })
+          setPipelineState('Report ready — CGI image-quality gate was not satisfied')
+          return
+        }
 
         const poolSizes: [number, number, number] = [
           pools.antrum.length,
@@ -187,15 +200,17 @@ export default function ReportPage() {
   }, [sessionId])
 
   const summary = useMemo(() => {
-    const gimEvaluated = frames.filter((frame) => frame.gim !== null)
-    const gimPositive = gimEvaluated.filter((frame) => (frame.gim?.score ?? 0) >= 1)
+    const gimEvaluated = frames.filter(hasValidGimResult)
+    const gimEpisodes = buildGimEpisodes(frames)
+    const consensusFrames = gimEpisodes.flatMap((episode) => episode.frames)
     return {
       whiteLight: frames.filter((frame) => frame.gns?.modality === 'WL').length,
       gimEvaluated: gimEvaluated.length,
-      gimPositive,
-      maxScore: Math.max(0, ...gimPositive.map((frame) => frame.gim?.score ?? 0)),
-      maxArea: Math.max(0, ...gimPositive.map((frame) => frame.gim?.area ?? 0)),
-      gimEvidence: selectGimEvidence(frames),
+      gimEpisodes,
+      consensusFrames,
+      maxScore: Math.max(0, ...consensusFrames.map((frame) => frame.gim?.score ?? 0)),
+      maxArea: Math.max(0, ...consensusFrames.map((frame) => frame.gim?.area ?? 0)),
+      gimEvidence: selectGimEvidence(gimEpisodes),
     }
   }, [frames])
 
@@ -257,30 +272,24 @@ export default function ReportPage() {
               <SummaryCard label="White-light frames" value={String(summary.whiteLight)} />
               <SummaryCard label="NBI frames evaluated" value={String(summary.gimEvaluated)} />
               <SummaryCard
-                label="GIM-positive frames"
-                value={String(summary.gimPositive.length)}
-                accent={summary.gimPositive.length > 0}
+                label="GIM-positive episodes"
+                value={String(summary.gimEpisodes.length)}
+                accent={summary.gimEpisodes.length > 0}
               />
             </section>
 
             <GimSection
-              positiveCount={summary.gimPositive.length}
+              episodeCount={summary.gimEpisodes.length}
+              consensusFrameCount={summary.consensusFrames.length}
               maxScore={summary.maxScore}
               maxArea={summary.maxArea}
               evidence={summary.gimEvidence}
             />
 
-            <CgiSection state={cgi} onShowFrames={() => setShowCgiFrames(true)} />
+            <CgiSection state={cgi} />
           </>
         )}
       </div>
-
-      {showCgiFrames && cgi.status === 'ready' && (
-        <CgiFramesDialog
-          evidence={cgi.evidence}
-          onClose={() => setShowCgiFrames(false)}
-        />
-      )}
     </main>
   )
 }
@@ -353,72 +362,107 @@ function SummaryCard({
 }
 
 function GimSection({
-  positiveCount,
+  episodeCount,
+  consensusFrameCount,
   maxScore,
   maxArea,
   evidence,
 }: {
-  positiveCount: number
+  episodeCount: number
+  consensusFrameCount: number
   maxScore: number
   maxArea: number
   evidence: FrameRecord[]
 }) {
+  const [expandedFrame, setExpandedFrame] = useState<FrameRecord | null>(null)
+
   return (
-    <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold tracking-widest text-purple-600 uppercase">
-            GIM
-          </p>
-          <h2 className="mt-1 text-xl font-semibold">Intestinal metaplasia findings</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            NBI-only segmentation results from sampled frames.
-          </p>
+    <>
+      <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold tracking-widest text-purple-600 uppercase">
+              GIM
+            </p>
+            <h2 className="mt-1 text-xl font-semibold">Intestinal metaplasia findings</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              NBI-only results confirmed when at least 2 of 3 consecutive
+              same-region frames are positive within 1 second.
+            </p>
+          </div>
+
+          <div className="flex gap-6 text-right">
+            <Metric label="Positive episodes" value={String(episodeCount)} />
+            <Metric label="Consensus frames" value={String(consensusFrameCount)} />
+            <Metric label="Maximum score" value={String(maxScore)} />
+            <Metric label="Maximum area" value={`${maxArea.toFixed(1)}%`} />
+          </div>
         </div>
 
-        <div className="flex gap-6 text-right">
-          <Metric label="Positive frames" value={String(positiveCount)} />
-          <Metric label="Maximum score" value={String(maxScore)} />
-          <Metric label="Maximum area" value={`${maxArea.toFixed(1)}%`} />
-        </div>
-      </div>
+        {evidence.length > 0 ? (
+          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {evidence.map((frame) => (
+              <GimEvidenceCard
+                key={frame.index}
+                frame={frame}
+                onExpand={() => setExpandedFrame(frame)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="mt-6 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-center text-sm text-slate-500">
+            No GIM finding satisfied the 2-of-3 temporal consensus rule.
+          </div>
+        )}
+      </section>
 
-      {evidence.length > 0 ? (
-        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {evidence.map((frame) => (
-            <GimEvidenceCard key={frame.index} frame={frame} />
-          ))}
-        </div>
-      ) : (
-        <div className="mt-6 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-center text-sm text-slate-500">
-          No sampled NBI frame reached GIM score 1 or 2.
-        </div>
+      {expandedFrame && (
+        <GimImageDialog
+          frame={expandedFrame}
+          onClose={() => setExpandedFrame(null)}
+        />
       )}
-    </section>
+    </>
   )
 }
 
-function GimEvidenceCard({ frame }: { frame: FrameRecord }) {
+function GimEvidenceCard({
+  frame,
+  onExpand,
+}: {
+  frame: FrameRecord
+  onExpand: () => void
+}) {
+  const region = frame.gns?.region ?? 'unknown'
+
   return (
     <figure className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950">
-      <div className="relative aspect-[1000/871]">
+      <button
+        type="button"
+        onClick={onExpand}
+        aria-label={`Expand GIM finding at ${formatTime(frame.t)}`}
+        className="group relative block aspect-[1000/871] w-full cursor-zoom-in overflow-hidden text-left"
+      >
         <img
           src={fileUrl(frame.image_url)}
           alt={`GIM finding at ${formatTime(frame.t)}`}
-          className="absolute inset-0 h-full w-full object-cover"
+          className="absolute inset-0 h-full w-full object-cover transition group-hover:brightness-110"
           loading="lazy"
         />
         {frame.gim?.mask_url && (
-          <img
-            src={fileUrl(frame.gim.mask_url)}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover"
-            loading="lazy"
-          />
+          <GimBoundaryOverlay src={fileUrl(frame.gim.mask_url)} />
         )}
-      </div>
+        <span className="absolute top-2 left-2 rounded-md bg-slate-950/80 px-2.5 py-1 text-xs font-medium text-white shadow-sm backdrop-blur-sm">
+          {REGION_LABEL[region]}
+        </span>
+        <span className="absolute right-2 bottom-2 rounded-md bg-slate-950/80 px-2.5 py-1 text-xs font-medium text-white opacity-0 shadow-sm backdrop-blur-sm transition group-hover:opacity-100">
+          Expand
+        </span>
+      </button>
       <figcaption className="flex items-center justify-between bg-white px-3 py-2 text-xs">
-        <span className="text-slate-500">{formatTime(frame.t)}</span>
+        <span className="text-slate-500">
+          {REGION_LABEL[region]} · {formatTime(frame.t)}
+        </span>
         <span className="font-medium text-purple-700">
           Score {frame.gim?.score} · {frame.gim?.area.toFixed(1)}%
         </span>
@@ -427,7 +471,65 @@ function GimEvidenceCard({ frame }: { frame: FrameRecord }) {
   )
 }
 
-function CgiSection({ state, onShowFrames }: { state: CgiState; onShowFrames: () => void }) {
+function GimImageDialog({
+  frame,
+  onClose,
+}: {
+  frame: FrameRecord
+  onClose: () => void
+}) {
+  const region = frame.gns?.region ?? 'unknown'
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [onClose])
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`GIM finding at ${formatTime(frame.t)}`}
+      className="fixed inset-0 z-50 bg-slate-950/95 p-4 backdrop-blur-sm sm:p-8"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div className="relative h-full w-full">
+        <img
+          src={fileUrl(frame.image_url)}
+          alt={`GIM finding at ${formatTime(frame.t)}`}
+          className="absolute inset-0 h-full w-full object-contain"
+        />
+        {frame.gim?.mask_url && (
+          <GimBoundaryOverlay src={fileUrl(frame.gim.mask_url)} fit="contain" />
+        )}
+
+        <div className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 rounded-lg bg-slate-950/85 px-4 py-2 text-center text-sm text-white shadow-lg backdrop-blur-sm">
+          {REGION_LABEL[region]} · {formatTime(frame.t)} · Score {frame.gim?.score} ·{' '}
+          {frame.gim?.area.toFixed(1)}%
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-0 right-0 rounded-lg border border-white/20 bg-slate-950/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function CgiSection({ state }: { state: CgiState }) {
   return (
     <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -440,16 +542,6 @@ function CgiSection({ state, onShowFrames }: { state: CgiState; onShowFrames: ()
             Highest-scoring antrum × body × upper-corpus white-light combination.
           </p>
         </div>
-
-        {state.status === 'ready' && (
-          <button
-            type="button"
-            onClick={onShowFrames}
-            className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
-          >
-            View selected frames
-          </button>
-        )}
       </div>
 
       {state.status === 'waiting' && (
@@ -471,27 +563,31 @@ function CgiSection({ state, onShowFrames }: { state: CgiState; onShowFrames: ()
         <CgiMessage tone="error">{state.message}</CgiMessage>
       )}
       {state.status === 'ready' && (
-        <div className="mt-6 grid gap-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-          <div>
-            <div className="flex items-end gap-3">
-              <span className="text-5xl font-semibold tracking-tight text-sky-700">
-                {(state.probability * 100).toFixed(1)}%
-              </span>
-              <span className="pb-1 text-sm text-slate-500">model probability</span>
+        <>
+          <div className="mt-6 grid gap-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+            <div>
+              <div className="flex items-end gap-3">
+                <span className="text-5xl font-semibold tracking-tight text-sky-700">
+                  {(state.probability * 100).toFixed(1)}%
+                </span>
+                <span className="pb-1 text-sm text-slate-500">model probability</span>
+              </div>
+              <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-sky-500"
+                  style={{ width: `${Math.max(0, Math.min(1, state.probability)) * 100}%` }}
+                />
+              </div>
             </div>
-            <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className="h-full rounded-full bg-sky-500"
-                style={{ width: `${Math.max(0, Math.min(1, state.probability)) * 100}%` }}
-              />
-            </div>
+            <p className="text-sm text-slate-500 md:text-right">
+              Pools {state.poolSizes.join(' / ')}
+              <br />
+              {state.combinations} combinations evaluated
+            </p>
           </div>
-          <p className="text-sm text-slate-500 md:text-right">
-            Pools {state.poolSizes.join(' / ')}
-            <br />
-            {state.combinations} combinations evaluated
-          </p>
-        </div>
+
+          <CgiEvidenceGrid evidence={state.evidence} />
+        </>
       )}
 
       <p className="mt-5 text-xs leading-relaxed text-slate-400">
@@ -518,21 +614,7 @@ function CgiMessage({
   return <div className={`mt-6 rounded-lg border px-5 py-6 text-sm ${style}`}>{children}</div>
 }
 
-function CgiFramesDialog({
-  evidence,
-  onClose,
-}: {
-  evidence: CgiEvidence[]
-  onClose: () => void
-}) {
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onClose])
-
+function CgiEvidenceGrid({ evidence }: { evidence: CgiEvidence[] }) {
   const label = {
     antrum: 'Antrum (A)',
     body: 'Body (B)',
@@ -540,60 +622,124 @@ function CgiFramesDialog({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-slate-950/65 p-4 backdrop-blur-sm"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
-    >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cgi-frames-title"
-        className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"
-      >
-        <header className="flex items-start justify-between gap-4">
-          <div>
-            <h2 id="cgi-frames-title" className="text-xl font-semibold">
-              CGI selected frames
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              The highest-scoring A / B / C image combination.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
+    <div className="mt-7">
+      <h3 className="text-sm font-semibold text-slate-800">
+        Selected white-light frames
+      </h3>
+      <p className="mt-1 text-xs text-slate-500">
+        Highest-scoring antrum / body / upper-corpus combination used for this result.
+      </p>
+      <div className="mt-4 grid gap-5 md:grid-cols-3">
+        {evidence.map((item) => (
+          <figure
+            key={item.region}
+            className="overflow-hidden rounded-xl border border-slate-200"
           >
-            Close
-          </button>
-        </header>
-
-        <div className="mt-6 grid gap-5 md:grid-cols-3">
-          {evidence.map((item) => (
-            <figure key={item.region} className="overflow-hidden rounded-xl border border-slate-200">
-              <img
-                src={jpegDataUrl(item.base64)}
-                alt={label[item.region]}
-                className="aspect-[1000/871] w-full bg-slate-950 object-cover"
-              />
-              <figcaption className="p-4">
-                <p className="font-medium text-slate-900">{label[item.region]}</p>
-                {item.frame ? (
+            <img
+              src={jpegDataUrl(item.base64)}
+              alt={label[item.region]}
+              className="aspect-[1000/871] w-full bg-slate-950 object-cover"
+            />
+            <figcaption className="p-4">
+              <p className="font-medium text-slate-900">{label[item.region]}</p>
+              {item.frame ? (
+                <>
                   <p className="mt-1 text-sm text-slate-500">
                     {formatTime(item.frame.t)} · GNS confidence{' '}
                     {(item.frame.gns!.confidence * 100).toFixed(1)}%
                   </p>
-                ) : (
-                  <p className="mt-1 text-sm text-slate-500">Timestamp unavailable</p>
-                )}
-              </figcaption>
-            </figure>
-          ))}
-        </div>
-      </section>
+                  {item.quality && (
+                    <p className="mt-1 text-xs text-emerald-700">
+                      Quality passed · brightness {item.quality.meanLuminance.toFixed(0)} ·
+                      sharpness {item.quality.sharpness.toFixed(0)}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="mt-1 text-sm text-slate-500">Timestamp unavailable</p>
+              )}
+            </figcaption>
+          </figure>
+        ))}
+      </div>
     </div>
+  )
+}
+
+function GimBoundaryOverlay({
+  src,
+  fit = 'cover',
+}: {
+  src: string
+  fit?: 'cover' | 'contain'
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.decoding = 'async'
+    image.onload = () => {
+      if (cancelled || !canvasRef.current) return
+
+      const canvas = canvasRef.current
+      canvas.width = image.naturalWidth
+      canvas.height = image.naturalHeight
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (!context) return
+
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0)
+      const source = context.getImageData(0, 0, canvas.width, canvas.height)
+      const output = context.createImageData(canvas.width, canvas.height)
+      // Four source pixels stay subtle in the report grid, then become clearly
+      // visible when the same ROI is expanded to the full viewport.
+      const radius = 4
+
+      for (let y = 0; y < canvas.height; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          const pixel = y * canvas.width + x
+          if (source.data[pixel * 4 + 3] === 0) continue
+
+          const boundary =
+            x < radius ||
+            x >= canvas.width - radius ||
+            y < radius ||
+            y >= canvas.height - radius ||
+            source.data[(pixel - radius) * 4 + 3] === 0 ||
+            source.data[(pixel + radius) * 4 + 3] === 0 ||
+            source.data[(pixel - radius * canvas.width) * 4 + 3] === 0 ||
+            source.data[(pixel + radius * canvas.width) * 4 + 3] === 0
+
+          if (boundary) {
+            const offset = pixel * 4
+            output.data[offset] = 168
+            output.data[offset + 1] = 85
+            output.data[offset + 2] = 247
+            output.data[offset + 3] = 235
+          }
+        }
+      }
+
+      context.putImageData(output, 0, 0)
+    }
+    image.src = src
+
+    return () => {
+      cancelled = true
+      image.onload = null
+    }
+  }, [src])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-hidden="true"
+      className={`pointer-events-none absolute inset-0 h-full w-full ${
+        fit === 'contain' ? 'object-contain' : 'object-cover'
+      }`}
+    />
   )
 }
 

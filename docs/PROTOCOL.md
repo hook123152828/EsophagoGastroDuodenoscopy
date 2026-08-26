@@ -23,7 +23,7 @@ video1.mp4 (1920×1080, 60fps)
 │ gateway  :8080                               │
 │  1. ffmpeg 依固定 ROI 裁切抽幀 (extract_fps)  │
 │  2. 全片跑 GNS        (gns_fps)              │
-│  3. 只對 NBI 幀跑 GIM (gim_fps)              │
+│  3. 只對非食道 NBI 幀跑 GIM (gim_fps)        │
 │  4. status → ready                           │
 │                                              │
 │  以上每算完一批就用 frames 事件推出去；        │
@@ -60,7 +60,8 @@ ROI = { x: 799, y: 105, width: 1000, height: 871 }
 - `image_url` 指向的 JPEG 尺寸 = `ROI.width × ROI.height`
 - `mask_url` 指向的 PNG 尺寸 = `ROI.width × ROI.height`，**RGBA**：
   背景為完全透明，IM 像素已上色（紫，alpha 130）。
-  前端直接用 `<img>` 疊上去即可，不需要做任何像素運算。
+  live 頁可直接用 `<img>` 疊上去；report 頁會讀取 alpha channel 並只畫病灶
+  boundary，兩者都不會改變原始 mask 或面積數值。
   需要數值的話用 `GimResult.score` / `GimResult.area`，不要去讀 mask 像素。
 - gateway 內部無論模型輸入被 resize 成幾乘幾，回傳前一律回到 ROI 尺寸
 
@@ -324,6 +325,9 @@ subscribeSession(sessionId, (ev) => {
 
 5. 第一頁保證：一旦 `ready`，`frames` 內每一筆的 `gns` 皆非 null
    （`gim` 仍可能為 null——WL 幀本來就沒有）。
+6. 報告頁目前的後處理政策：CGI 候選必須通過曝光、暗區、反光與清晰度 gate；
+   GIM 必須通過同部位、1 秒內 3 張至少 2 張陽性的 temporal consensus，之後才
+   合併成 positive episodes。這些是 report policy，不會覆寫 session 中的原始結果。
 
 ---
 

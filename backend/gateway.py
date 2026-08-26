@@ -257,15 +257,24 @@ async def run_gns(session: Session, client: httpx.AsyncClient) -> None:
     session.set_progress(gns=1.0)
 
 
+def is_gim_candidate(frame: FrameRecord) -> bool:
+    """Return whether a frame is anatomically and optically valid for GIM."""
+    return (
+        frame.gns is not None
+        and frame.gns.modality == "NBI"
+        and frame.gns.region != "esophagus"
+    )
+
+
 async def run_gim(session: Session, client: httpx.AsyncClient) -> None:
-    """GIM is trained on NBI only — white-light frames are never sent."""
+    """Run GIM only on non-esophageal NBI frames."""
     stride = _stride(
         session.manifest.sampling.gim_fps, session.manifest.sampling.extract_fps
     )
     targets = [
         frame
         for frame in session.frames[::stride]
-        if frame.gns is not None and frame.gns.modality == "NBI"
+        if is_gim_candidate(frame)
     ]
     if not targets:
         session.set_progress(gim=1.0)
@@ -588,9 +597,9 @@ async def analyze(session_id: str, request: AnalyzeRequest) -> FrameRecord:
             response.raise_for_status()
             frame.gns = GnsResult(**response.json()["results"][0])
 
-            # GIM is NBI-only, so white-light frames stay unset — same rule the
-            # scan follows.
-            if frame.gns.modality == "NBI" and frame.gim is None:
+            # GIM is valid only for non-esophageal NBI frames — the same rule
+            # used by the background scan.
+            if is_gim_candidate(frame) and frame.gim is None:
                 masks_dir = session.directory / "masks"
                 masks_dir.mkdir(parents=True, exist_ok=True)
                 mask_out = masks_dir / f"{index + 1:06d}.png"

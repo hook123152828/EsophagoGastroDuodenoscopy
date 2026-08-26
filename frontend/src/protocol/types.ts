@@ -88,7 +88,7 @@ export interface FrameRecord {
   t: number
   image_url: string
   gns: GnsResult | null
-  /** Always null on white-light frames: GIM is trained on NBI only. */
+  /** Null on white-light and esophageal frames; GIM is gastric NBI only. */
   gim: GimResult | null
 }
 

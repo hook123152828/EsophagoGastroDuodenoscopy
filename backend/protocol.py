@@ -66,9 +66,9 @@ class Roi(BaseModel):
 
 
 class Sampling(BaseModel):
-    extract_fps: float = 60
-    gns_fps: float = 60
-    gim_fps: float = 60
+    extract_fps: float = 15
+    gns_fps: float = 15
+    gim_fps: float = 5
 
 
 class VideoInfo(BaseModel):

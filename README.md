@@ -155,12 +155,21 @@ bash scripts/stop_services.sh
 
 1. 開 <http://localhost:5173> → 選一支影片，或把影片拖進上傳區
    （存進 `VIDEO_DIR`，上傳完成即自動建立 session 並進入檢視頁）
-2. 背景會依序執行：ffmpeg 裁切抽幀 → GNS 全片分類 → GIM 對 NBI 幀分割，
+2. 背景會依序執行：ffmpeg 裁切抽幀 → GNS 全片分類 → GIM 對非食道 NBI 幀分割，
    每算完一批就即時推送到畫面上
 3. **不必等掃描完成**。播放或拖到掃描還沒走到的位置時，第一頁會就地送那一幀去
    推論，控制列出現 `LIVE` 標記與當次延遲。結果會寫回 session，
    背景掃描之後會跳過它
 4. 掃描完成後 session 轉為 `ready`，`/report` 頁會自動收到事件並接手
+
+報告頁會再做一層不改動模型輸出的品質控制：
+
+- CGI 只從白光候選中取圖，並剔除明顯曝光不足、過曝／反光過多及失焦影格；
+  每個部位最多保留 4 張通過品質 gate 的影格。
+- GIM 不把單張陽性直接列入報告；同一部位在 1 秒內連續評估的 3 張中至少 2 張
+  為陽性，才合併成一個 positive episode。
+- GIM evidence 在報告中只畫 segmentation boundary；live 頁仍保留原本的半透明
+  mask 疊圖。
 
 實測 `video1.mp4`（14 分鐘 / 60 fps / 2.5 GB）在 RTX 4090 上：
 
