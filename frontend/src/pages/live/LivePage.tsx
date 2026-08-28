@@ -55,6 +55,31 @@ export default function LivePage() {
     return () => cancelAnimationFrame(handle)
   }, [])
 
+  // The overlays are driven from the keyboard: during a procedure the
+  // endoscopist has one hand on the scope, and reaching for a mouse to turn a
+  // readout on is a hand they do not have. The buttons stay clickable, but
+  // they are the readout of the state rather than the way to reach it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      if (target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? '')) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      if (key === OVERLAY_KEYS.im) {
+        event.preventDefault()
+        setShowMask((value) => !value)
+      } else if (key === OVERLAY_KEYS.polyp) {
+        event.preventDefault()
+        setShowPolyp((value) => !value)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // On-demand analysis of the current timestamp, for wherever the background
   // scan has not reached yet.
   const live = useLiveAnalysis(
@@ -123,7 +148,6 @@ export default function LivePage() {
   // offered there and nowhere else — the mirror of the IM rule.
   const polypEligible =
     frame?.gns?.modality === 'WL' && POLYP_REGIONS.includes(region)
-  const scanning = manifest.status !== 'ready'
 
   function togglePlay() {
     const video = videoRef.current
@@ -153,7 +177,6 @@ export default function LivePage() {
         </div>
 
         <div className="flex items-center gap-4">
-          {scanning && <ScanProgress manifest={manifest} />}
           {manifest.status === 'ready' && (
             <span className="text-sm text-emerald-400">Scan complete</span>
           )}
@@ -218,51 +241,27 @@ export default function LivePage() {
               {playing ? 'Pause' : 'Play'}
             </button>
 
-            <button
-              type="button"
+            {/* Armed at any time, effective only where the model is defined:
+                the light changes many times a minute, so a control that could
+                only be set while the right light happened to be on would be
+                dead about as often as it was live. The button says whether the
+                overlay is on, and nothing else — whether it applies right now
+                is already visible on the stage. */}
+            <OverlayButton
+              label="IM overlay"
+              on={showMask}
+              shortcut={OVERLAY_KEYS.im}
+              tone="im"
               onClick={() => setShowMask((value) => !value)}
-              disabled={!imEligible}
-              title={
-                imEligible
-                  ? undefined
-                  : 'GIM is only valid on gastric mucosa under NBI'
-              }
-              className={`rounded px-5 py-2.5 text-sm transition ${
-                !imEligible
-                  ? 'cursor-not-allowed bg-console-panel/50 text-console-muted/50'
-                  : showMask
-                    ? 'bg-im/20 text-im ring-1 ring-im/60'
-                    : 'bg-console-panel text-console-muted hover:bg-console-line'
-              }`}
-            >
-              IM overlay {showMask ? 'on' : 'off'}
-              {!imEligible && (
-                <span className="ml-1.5 text-xs">(gastric NBI only)</span>
-              )}
-            </button>
+            />
 
-            <button
-              type="button"
+            <OverlayButton
+              label="Polyp overlay"
+              on={showPolyp}
+              shortcut={OVERLAY_KEYS.polyp}
+              tone="polyp"
               onClick={() => setShowPolyp((value) => !value)}
-              disabled={!polypEligible}
-              title={
-                polypEligible
-                  ? undefined
-                  : 'The polyp detector is only valid on gastric mucosa under white light'
-              }
-              className={`rounded px-5 py-2.5 text-sm transition ${
-                !polypEligible
-                  ? 'cursor-not-allowed bg-console-panel/50 text-console-muted/50'
-                  : showPolyp
-                    ? 'bg-polyp/20 text-polyp ring-1 ring-polyp/60'
-                    : 'bg-console-panel text-console-muted hover:bg-console-line'
-              }`}
-            >
-              Polyp overlay {showPolyp ? 'on' : 'off'}
-              {!polypEligible && (
-                <span className="ml-1.5 text-xs">(gastric WL only)</span>
-              )}
-            </button>
+            />
 
             {live.active && (
               <span className="flex items-center gap-2 rounded bg-scope-accent/10 px-3 py-2 text-sm text-scope-accent ring-1 ring-scope-accent/40">
@@ -309,6 +308,47 @@ export default function LivePage() {
   )
 }
 
+/** Keys that toggle each overlay. Shown on the buttons so they are findable. */
+const OVERLAY_KEYS = { im: 'i', polyp: 'p' } as const
+
+/** An overlay toggle: on or off, and which key does it. */
+function OverlayButton({
+  label,
+  on,
+  shortcut,
+  tone,
+  onClick,
+}: {
+  label: string
+  on: boolean
+  shortcut: string
+  tone: 'im' | 'polyp'
+  onClick: () => void
+}) {
+  const active = {
+    im: 'bg-im/20 text-im ring-1 ring-im/60',
+    polyp: 'bg-polyp/20 text-polyp ring-1 ring-polyp/60',
+  }[tone]
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      className={`flex items-center justify-between rounded px-5 py-2.5 text-sm transition ${
+        on ? active : 'bg-console-panel text-console-muted hover:bg-console-line'
+      }`}
+    >
+      <span>
+        {label} {on ? 'on' : 'off'}
+      </span>
+      <kbd className="ml-3 rounded border border-current/30 px-1.5 py-0.5 text-[11px] opacity-60">
+        {shortcut.toUpperCase()}
+      </kbd>
+    </button>
+  )
+}
+
 /**
  * Starting arrangement for layout mode, as percentages of the canvas — the
  * current production layout, so dragging starts from what is on screen.
@@ -318,27 +358,4 @@ const DEFAULT_LAYOUT = {
   timeline: { x: 0, y: 91.5, w: 47.5, h: 8.5 },
   controls: { x: 47.5, y: 0, w: 18.5, h: 100 },
   site: { x: 66, y: 0, w: 34, h: 100 },
-}
-
-function ScanProgress({ manifest }: { manifest: import('@/protocol').SessionManifest }) {
-  const stages = [
-    { label: 'Extract', value: manifest.progress.extract },
-    { label: 'GNS', value: manifest.progress.gns },
-    { label: 'GIM', value: manifest.progress.gim },
-  ]
-  return (
-    <div className="flex items-center gap-3">
-      {stages.map((stage) => (
-        <span key={stage.label} className="flex items-center gap-1.5 text-sm">
-          <span className="text-console-muted">{stage.label}</span>
-          <span className="h-1 w-14 overflow-hidden rounded-full bg-console-line">
-            <span
-              className="block h-full bg-scope-accent transition-all"
-              style={{ width: `${stage.value * 100}%` }}
-            />
-          </span>
-        </span>
-      ))}
-    </div>
-  )
 }
