@@ -2,11 +2,25 @@ export const MASK_BOUNDARY_FILTER_ID = 'mask-boundary'
 export const MASK_BOUNDARY_FILTER = `url(#${MASK_BOUNDARY_FILTER_ID})`
 
 /**
- * Turns a filled segmentation mask into the shared Live/Report outline.
+ * Strokes the edge of a filled segmentation mask.
  *
- * The filter works only on alpha, so GIM stays purple and polyp masks stay
- * yellow. Closing and opening merge nearby regions and remove isolated noise
- * before the final erosion is subtracted to leave the boundary.
+ * Filled, a mask covers the very mucosa the endoscopist is reading — the pit
+ * pattern inside a lesion is what the call is made on — so only its boundary
+ * is drawn.
+ *
+ * The shape itself arrives ready: smoothed, closed up and free of holes, done
+ * in ROI pixels by the service that produced it (`backend/masks.py`). This
+ * used to be a chain of `feMorphology`, which was wrong twice over — its
+ * structuring element is a square, so every boundary came out with axis-
+ * aligned corners, and its radii are in CSS pixels, so one finding was a
+ * different shape in the report's thumbnails than on the live stage.
+ *
+ * What is left is a band across the edge: blur the coverage into a ramp, then
+ * keep the middle of that ramp. The line lands centred on the boundary, is
+ * anti-aliased for free, and follows a curve as a curve. The tint is taken
+ * from the mask itself — spread outwards first, so the half of the band lying
+ * outside the original shape is painted too rather than fading to black —
+ * which keeps GIM purple and polyps yellow through one shared filter.
  */
 export function MaskBoundaryFilter() {
   return (
@@ -19,14 +33,23 @@ export function MaskBoundaryFilter() {
         height="116%"
         colorInterpolationFilters="sRGB"
       >
-        <feComponentTransfer result="solid">
+        {/* The tint is stored below half opacity so the mucosa stays readable
+            under a filled mask; as a line it should be fully drawn. */}
+        <feComponentTransfer in="SourceGraphic" result="solid">
           <feFuncA type="linear" slope="255" />
         </feComponentTransfer>
-        <feMorphology in="solid" operator="dilate" radius="5" result="grown" />
-        <feMorphology in="grown" operator="erode" radius="7" result="shrunk" />
-        <feMorphology in="shrunk" operator="dilate" radius="2" result="merged" />
-        <feMorphology in="merged" operator="erode" radius="4" result="inner" />
-        <feComposite in="merged" in2="inner" operator="out" />
+
+        <feGaussianBlur in="solid" stdDeviation="3" result="ramp" />
+        <feComponentTransfer in="ramp" result="band">
+          <feFuncA type="table" tableValues="0 0 1 1 0 0" />
+        </feComponentTransfer>
+
+        <feMorphology in="SourceGraphic" operator="dilate" radius="6" result="spread" />
+        <feComponentTransfer in="spread" result="ink">
+          <feFuncA type="linear" slope="255" />
+        </feComponentTransfer>
+
+        <feComposite in="ink" in2="band" operator="in" />
       </filter>
     </svg>
   )

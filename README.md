@@ -232,8 +232,9 @@ bash scripts/stop_services.sh
 
 1. 開 <http://localhost:5173> → 選一支影片，或把影片拖進上傳區
    （存進 `VIDEO_DIR`，上傳完成即自動建立 session 並進入檢視頁）
-2. 背景會依序執行：ffmpeg 裁切抽幀 → GNS 全片分類 → GIM 對非食道 NBI 幀分割，
-   每算完一批就即時推送到畫面上
+2. 背景執行：ffmpeg 裁切抽幀 → GNS 全片分類，**GIM 跟著 GNS 的進度同時跑**
+   （它只吃已經被判為 NBI 的幀，不需要等 GNS 全部跑完）。每算完一批就即時
+   推送到畫面上
 3. **不必等掃描完成**。播放或拖到掃描還沒走到的位置時，第一頁會就地送那一幀去
    推論，控制列出現 `LIVE` 標記與當次延遲。結果會寫回 session，
    背景掃描之後會跳過它
@@ -241,7 +242,13 @@ bash scripts/stop_services.sh
    - **IM overlay** — 胃部 NBI 幀（紫色描邊）
    - **Polyp overlay** — 胃部白光幀（黃色描邊）
 
+   兩顆**隨時都能按**，按下去就記住你的意思；光源不對時顯示
+   `waiting for …`，等切到對的光源自動生效。內視鏡檢查中光源一分鐘要切好幾次，
+   把按鈕鎖起來等於逼人盯著光源等，不如讓它先按著。
+
    兩者都畫成**只有輪廓、中間不填色**，因為病灶內部的黏膜表現正是判讀依據。
+   輪廓的形狀（平滑、填洞、IM 的斑塊合併）由後端決定，見
+   [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §4.4。
    息肉這條**不在背景掃描裡**（一幀 90–120 ms，全片跑不動），只有按鈕開著時
    才會對 playhead 當下那一幀送去算
 5. 掃描完成後 session 轉為 `ready`，`/report` 頁會自動收到事件並接手
@@ -288,12 +295,36 @@ bash scripts/stop_services.sh
 | `POLYP_WEIGHT` | `Polyp/weights/polyp_yolo.pt` | `scripts/train_polyp.py` 產生 |
 | `MEDSAM_WEIGHT` | `MedSAM/work_dir/MedSAM/medsam_vit_b.pth` | |
 | `POLYP_CONF` | `0.35` | 偵測器信心門檻；調低會多抓也多誤報 |
+| `DECODE_WORKERS` | `min(16, CPU 數)` | 各模型服務解碼一批 JPEG 用的執行緒數 |
+| `SCAN_CONCURRENCY` | `3` | 每個掃描階段同時在途的批次數；GPU 被別的工作佔用時可調降 |
 | `GIM_CONFIG` | `GIM/model/…focal_decoder.py` | mmseg config |
 | `VIDEO_DIR` | `./video` | 影片來源目錄，也是 `/media` 串流的根 |
 | `SESSION_DIR` | `./backend/sessions` | 抽出的幀、mask 與 manifest |
 | `GATEWAY_PORT` | `8080` | |
 | `GNS_URL` / `GIM_URL` / `CGI_URL` / `POLYP_URL` | `127.0.0.1:8000/8001/8002/8003` | |
 | `GNS_ENV` / `GIM_ENV` / `CGI_ENV` / `POLYP_ENV` / `GATEWAY_ENV` | `GNS` `IM_web` `cgi_env` `polyp_env` `endo-gateway` | 啟動腳本用的 conda 環境名 |
+
+### 掃描的平行化
+
+掃描慢的原因**不是 GPU**。GNS 本身在 4090 上跑得到 ~500 fps，但解碼 1000×871 的
+JPEG 一張一張來只有 ~160 fps，所以整場掃描有大半時間顯示卡在等 Pillow。
+Pillow 解碼時會放掉 GIL，所以開執行緒幾乎是線性加速：
+
+| 解碼方式 | 純解碼吞吐 | GNS 端到端 |
+|---|---|---|
+| 序列（舊） | 160 fps | 99 fps |
+| 16 執行緒 | 1212 fps | **268 fps** |
+
+（端到端是在一張同時被別的訓練工作佔用的 4090 上量的，兩邊條件相同。）
+
+第二件事是 **GIM 不再等 GNS 跑完**。它只吃 GNS 已經判為 NBI 的幀，所以能跟著
+分類的進度往前推；兩個階段以 queue 串成 producer/consumer 同時執行。
+
+> **GPU 記憶體**：兩個模型同時在卡上，峰值需求是兩者相加。卡若被別的工作佔滿，
+> 某一批可能會 OOM——這時 gateway 會把該批**對半拆開重試**，而不是讓整場掃描失敗。
+> 連單張都失敗才是真的沒記憶體了，錯誤會照實回報。
+> `SCAN_CONCURRENCY` 預設 3，每多一個在途批次就多一份 activation；卡被佔用而
+> 頻繁觸發拆批重試時，把它調低。
 
 ### 取樣率
 
@@ -406,11 +437,9 @@ gateway 環境少裝 `python-multipart`。另外只接受 `.mp4 .avi .mov .mkv`�
 ## 已知限制
 
 - GNS 全片部位準確率約 80%（video1）／60%（video2），插入段、十二指腸、賁門最弱。
-- **部位判讀沒有時序平滑。** 每一幀獨立取 argmax，`video1.mp4` 全片切換 946 次
-  （每分鐘 67.5 次），其中 66% 的判定持續不到 0.2 秒。這不是模型準確率問題，
-  是缺少遲滯造成的。要修的話只需在 `gateway.py` 掃描完 GNS 後加一層平滑，
-  或在 `useLiveAnalysis` 的即時路徑上加，兩者都不會動到契約。
-- 因為上一點，部位圖的「已檢視」勾選資訊量很低——六個部位在前 135 秒就全部亮完。
+- GIM 的輸出**逐幀不穩**：胃部 NBI 幀裡只有 2% 有 mask，而且連續段的中位長度只有
+  一幀。畫面上看到的是經過共識與停留處理的版本（`docs/PROTOCOL.md` §4.5），
+  不是模型的逐幀原始輸出。
 - GIM 訓練資料是放大內視鏡 NBI 近拍，廣角觀察畫面容易漏判。
 - `G1`–`G6` 對應到哪個解剖部位在論文與程式碼中都沒有記載，目前的對應表是
   以醫師標註比對推得，定義在 `backend/protocol.py` 的 `REGION_MAP`。

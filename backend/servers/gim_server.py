@@ -8,9 +8,14 @@ pre-blended thumbnail: the overlay on page 1 has to line up with the video, and
 that is impossible from a 320px-wide composited JPEG.  The mask is written as an
 RGBA PNG at ROI resolution — transparent background, tinted IM pixels — so the
 front-end can draw it straight over the video with no pixel manipulation.
+
+The score and the area are measured on the model's raw output.  The PNG is the
+*display shape* of that output — see ``backend/masks`` for why the two differ
+and why the difference is resolved here rather than in the browser.
 """
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
@@ -24,6 +29,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from backend import config
+from backend.masks import IM_MERGE_RADIUS, write_overlay
 
 from mmseg.apis import inference_model, init_model  # noqa: E402
 
@@ -69,11 +75,21 @@ def _score(area: float) -> int:
     return 0
 
 
+# The batch is decoded up front, across threads, so the GPU is not left waiting
+# on Pillow between frames. See config.DECODE_WORKERS.
+DECODERS = ThreadPoolExecutor(config.DECODE_WORKERS, thread_name_prefix="decode")
+
+
+def _load(path: str) -> np.ndarray:
+    return np.array(Image.open(path).convert("RGB"))
+
+
 @app.post("/predict")
 def predict(request: PredictRequest) -> dict:
+    images = list(DECODERS.map(_load, [item.path for item in request.items]))
+
     results = []
-    for item in request.items:
-        image = np.array(Image.open(item.path).convert("RGB"))
+    for item, image in zip(request.items, images):
         prediction = inference_model(MODEL, image).pred_sem_seg.data.cpu()
 
         keep = np.all((image > BRIGHTNESS_LOW) & (image < BRIGHTNESS_HIGH), axis=-1)
@@ -85,11 +101,14 @@ def predict(request: PredictRequest) -> dict:
 
         wrote_mask = False
         if score >= 1 and item.mask_out:
-            rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
-            rgba[mask] = OVERLAY_RGBA
-            Path(item.mask_out).parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(rgba, mode="RGBA").save(item.mask_out, optimize=True)
-            wrote_mask = True
+            # IM arrives as scattered patches of one affected area, so the gaps
+            # between neighbours are bridged; a polyp is a discrete lesion and
+            # is never merged with the one beside it.
+            wrote_mask = bool(
+                write_overlay(
+                    Path(item.mask_out), mask, OVERLAY_RGBA, IM_MERGE_RADIUS
+                )
+            )
 
         results.append({"score": score, "area": area, "has_mask": wrote_mask})
 

@@ -9,6 +9,7 @@ would cost more than the inference does.
 """
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List
 
@@ -62,14 +63,22 @@ def health() -> dict:
     return {"ok": MODEL is not None, "service": "gns"}
 
 
+# Decoding is what the scan is actually waiting on — see config.DECODE_WORKERS.
+# Pillow drops the GIL inside the decoder, so a thread pool is enough; no need
+# to pay for processes and pickling the pixels back.
+DECODERS = ThreadPoolExecutor(config.DECODE_WORKERS, thread_name_prefix="decode")
+
+
+def _load(path: str) -> torch.Tensor:
+    return TRANSFORM(Image.open(path).convert("RGB"))
+
+
 @app.post("/predict")
 def predict(request: PredictRequest) -> dict:
     if not request.paths:
         return {"results": []}
 
-    batch = torch.stack(
-        [TRANSFORM(Image.open(p).convert("RGB")) for p in request.paths]
-    ).to(DEVICE)
+    batch = torch.stack(list(DECODERS.map(_load, request.paths))).to(DEVICE)
 
     with torch.no_grad():
         probs = torch.softmax(MODEL(batch), dim=1).cpu()

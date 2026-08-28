@@ -5,7 +5,12 @@
  * index says nothing about when it happened. `t` is the only alignment key.
  */
 
-import { REGION_ORDER, type FrameRecord, type RegionId } from './types'
+import {
+  REGION_ORDER,
+  type FrameRecord,
+  type Modality,
+  type RegionId,
+} from './types'
 
 /**
  * The frame that should be on screen at `time`.
@@ -28,24 +33,75 @@ export function frameAt(frames: FrameRecord[], time: number): FrameRecord | null
   return frames[low]
 }
 
+/** Frames GIM ran on that must agree before a finding is drawn, and how far
+ * back that agreement may be gathered from. */
+export const IM_CONSENSUS_OF = 2
+export const IM_CONSENSUS_IN = 3
+export const IM_CONSENSUS_WINDOW_S = 1
+
 /**
- * The most recent frame at or before `time` that carries a GIM result.
+ * How long a confirmed finding stays on screen after the frame that made it.
+ *
+ * Held only as long as it is still describing what is under the scope. A
+ * longer hold does make the overlay calmer — at 1.5 s the same procedure shows
+ * 11 findings with a median length of 1.85 s rather than 16 at 0.57 s — but it
+ * buys that by leaving an outline over mucosa the scope has already moved off,
+ * and an outline in the wrong place is worse than one that was brief.
+ */
+export const IM_HOLD_S = 0.5
+
+/**
+ * Whether the finding on `frames[index]` is corroborated by its neighbours.
+ *
+ * Segmentation of a lesion this small is decided frame by frame and is not
+ * stable frame to frame: over video1.mp4 the mask appears on 339 of 16,309
+ * gastric NBI frames, in 136 separate runs whose median length is one frame.
+ * Drawn as they come, most findings are a single flash of an outline — which
+ * is not something anyone can read, and is as often the model changing its
+ * mind as it is a lesion entering the field.
+ *
+ * So a finding is drawn only once the frames around it agree: two of the last
+ * three GIM ran on, gathered from no further back than a second. Page 2 builds
+ * its episodes on the same rule, so what the two pages call a finding matches.
+ */
+function imConfirmed(frames: FrameRecord[], index: number): boolean {
+  const at = frames[index]
+  let considered = 0
+  let positive = 0
+
+  for (let i = index; i >= 0 && considered < IM_CONSENSUS_IN; i--) {
+    const frame = frames[i]
+    if (!frame.gim) continue
+    if (at.t - frame.t > IM_CONSENSUS_WINDOW_S) break
+    considered += 1
+    if (frame.gim.mask_url) positive += 1
+  }
+
+  return considered >= IM_CONSENSUS_IN && positive >= IM_CONSENSUS_OF
+}
+
+/**
+ * The most recent corroborated IM finding at or before `time`.
  *
  * GIM runs at a lower rate than playback and skips white-light frames
  * entirely, so the nearest frame often has nothing to show. `maxAge` caps how
  * stale a mask may be before it is dropped — without it, a mask from a
  * previous NBI segment would linger over unrelated mucosa.
+ *
+ * What steadies the overlay is the corroboration rather than the holding: over
+ * video1.mp4 it turns 30 appearances into 16, and the ones it removes are the
+ * single-frame flashes.
  */
 export function gimFrameAt(
   frames: FrameRecord[],
   time: number,
-  maxAge = 0.5,
+  maxAge = IM_HOLD_S,
 ): FrameRecord | null {
   const current = frameAt(frames, time)
   if (!current) return null
 
   for (let i = current.index; i >= 0 && current.t - frames[i].t <= maxAge; i--) {
-    if (frames[i]?.gim) return frames[i]
+    if (frames[i]?.gim?.mask_url && imConfirmed(frames, i)) return frames[i]
   }
   return null
 }
@@ -231,6 +287,104 @@ export function buildRegionTrack(frames: FrameRecord[]): RegionTrack {
   }
 
   return { samples, spans }
+}
+
+/** Trailing window the modality vote is taken over. */
+export const MODALITY_WINDOW_S = 1
+
+export interface ModalityTrack {
+  samples: { t: number; modality: Modality }[]
+}
+
+/**
+ * The stabilised light, built the way the site is.
+ *
+ * The site readout has been smoothed since §4.1 of the protocol, but the light
+ * it is paired with was still read straight off the frame — and it is no
+ * steadier: over video1.mp4 the raw modality changes 1,230 times, 88 times a
+ * minute. Both feed the same decision about whether a model applies here, so
+ * leaving one raw made that decision flicker 324 times over the procedure,
+ * blinking the overlay, the badge and the button along with it. Voting on the
+ * light as well brings that to 38.
+ *
+ * A shorter window than the site's: the light is switched deliberately and
+ * changes cleanly, so it needs de-noising rather than the three seconds of
+ * evidence it takes to decide the scope has moved to another region.
+ */
+export function buildModalityTrack(frames: FrameRecord[]): ModalityTrack {
+  const samples: ModalityTrack['samples'] = []
+  const window: { t: number; modality: Modality; confidence: number }[] = []
+  const sums = new Map<Modality, number>()
+
+  let shown: Modality = 'WL'
+  let challenger: Modality | null = null
+  let challengerSince = 0
+  let lastIngested = -Infinity
+
+  for (const frame of frames) {
+    if (!frame.gns?.modality || frame.t - lastIngested < TRACK_STEP_S) continue
+
+    // A gap wider than the window means the samples either side of it are not
+    // evidence about the same moment — the same reasoning as the site track.
+    if (frame.t - lastIngested > MODALITY_WINDOW_S) {
+      window.length = 0
+      sums.clear()
+      shown = frame.gns.modality
+      challenger = null
+    }
+    lastIngested = frame.t
+
+    const entry = {
+      t: frame.t,
+      modality: frame.gns.modality,
+      confidence: frame.gns.confidence,
+    }
+    window.push(entry)
+    sums.set(entry.modality, (sums.get(entry.modality) ?? 0) + entry.confidence)
+
+    while (window.length && frame.t - window[0].t > MODALITY_WINDOW_S) {
+      const gone = window.shift()!
+      sums.set(gone.modality, (sums.get(gone.modality) ?? 0) - gone.confidence)
+    }
+
+    // Ties go to whatever is on screen — the readout never moves for free.
+    const held = sums.get(shown) ?? 0
+    const other: Modality = shown === 'NBI' ? 'WL' : 'NBI'
+    const rival = sums.get(other) ?? 0
+
+    if (rival > held) {
+      if (challenger !== other) {
+        challenger = other
+        challengerSince = frame.t
+      }
+      const lead = (rival - held) / window.length
+      if (frame.t - challengerSince >= REGION_DWELL_S && lead >= REGION_MARGIN) {
+        shown = other
+        challenger = null
+      }
+    } else {
+      challenger = null
+    }
+
+    samples.push({ t: frame.t, modality: shown })
+  }
+
+  return { samples }
+}
+
+/** The stabilised light at `time` — what decides whether a model applies. */
+export function trackModalityAt(track: ModalityTrack, time: number): Modality | null {
+  const { samples } = track
+  if (samples.length === 0 || time < samples[0].t) return null
+
+  let low = 0
+  let high = samples.length - 1
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2)
+    if (samples[mid].t <= time) low = mid
+    else high = mid - 1
+  }
+  return samples[low].modality
 }
 
 /** The stabilised site at `time` — what the panel names. */

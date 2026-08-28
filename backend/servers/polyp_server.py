@@ -19,6 +19,7 @@ front-end draws straight over the video.
 """
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
@@ -33,6 +34,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from backend import config
+from backend.masks import write_overlay
 
 # MedSAM is a read-only checkout, so it goes on the path rather than being
 # installed — its setup.py drags in jupyterlab, monai and SimpleITK, none of
@@ -153,11 +155,19 @@ def _segment(image: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     return (probability[:, 0] > 0.5).any(dim=0).cpu().numpy()
 
 
+DECODERS = ThreadPoolExecutor(config.DECODE_WORKERS, thread_name_prefix="decode")
+
+
+def _load(path: str) -> np.ndarray:
+    return np.array(Image.open(path).convert("RGB"))
+
+
 @app.post("/predict")
 def predict(request: PredictRequest) -> dict:
+    images = list(DECODERS.map(_load, [item.path for item in request.items]))
+
     results = []
-    for item in request.items:
-        image = np.array(Image.open(item.path).convert("RGB"))
+    for item, image in zip(request.items, images):
         boxes = _detect(image)
 
         if not len(boxes):
@@ -167,13 +177,11 @@ def predict(request: PredictRequest) -> dict:
         mask = _segment(image, boxes)
         area = float(round(mask.mean() * 100, 2))
 
+        # No merge radius: the count is reported on screen, so two polyps a few
+        # tens of pixels apart must stay two outlines rather than becoming one.
         wrote_mask = False
         if mask.any() and item.mask_out:
-            rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
-            rgba[mask] = OVERLAY_RGBA
-            Path(item.mask_out).parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(rgba, mode="RGBA").save(item.mask_out, optimize=True)
-            wrote_mask = True
+            wrote_mask = bool(write_overlay(Path(item.mask_out), mask, OVERLAY_RGBA))
 
         results.append(
             {

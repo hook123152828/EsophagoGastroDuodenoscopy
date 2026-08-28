@@ -100,6 +100,26 @@ def missing_binaries() -> List[str]:
 # bounded by JPEG decoding rather than by the GPU.
 GNS_BATCH = int(os.getenv("GNS_BATCH", "32"))
 
+# How many batches each scan stage keeps in flight, so one batch is decoded
+# while the previous one is still on the GPU.
+#
+# Each in-flight batch holds its own activations, so this is also the knob that
+# decides how much of the card the scan wants at once.  On a 4090 the pipeline
+# has to itself there is room to spare; on a card shared with other work a
+# batch can fail for want of memory, which the gateway handles by splitting it
+# and retrying rather than losing the scan.  Drop it to 1 if that is happening
+# often enough to be slowing things down.
+SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "3"))
+
+# Threads each model service uses to decode a batch of JPEGs.
+#
+# This is the scan's real bottleneck, not the GPU.  Decoding 1000x871 frames one
+# after another runs at ~160/s while GNS itself classifies at ~500/s, so the
+# card spends most of the scan waiting.  Pillow releases the GIL inside the
+# decoder, so threads scale nearly linearly: 16 of them reach ~1200/s and the
+# GPU becomes the limit, as it should be.
+DECODE_WORKERS = int(os.getenv("DECODE_WORKERS", str(min(16, (os.cpu_count() or 4)))))
+
 # Detector confidence floor.  The detector was fine-tuned on a different scope
 # and console than the procedure videos, so it is run deliberately shy: a box
 # that survives this is worth a MedSAM pass, and MedSAM is the expensive half.

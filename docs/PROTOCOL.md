@@ -22,8 +22,9 @@ video1.mp4 (1920×1080, 60fps)
 ┌──────────────────────────────────────────────┐
 │ gateway  :8080                               │
 │  1. ffmpeg 依固定 ROI 裁切抽幀 (extract_fps)  │
-│  2. 全片跑 GNS        (gns_fps)              │
-│  3. 只對「胃部 NBI」幀跑 GIM (gim_fps)        │
+│  2. GNS 全片分類 (gns_fps)                    │
+│  3. GIM 跟著 GNS 的進度同時跑，只吃它已經判為  │
+│     NBI 的幀 (gim_fps)——不是等 GNS 全部跑完   │
 │  4. status → ready                           │
 │                                              │
 │  以上每算完一批就用 frames 事件推出去；        │
@@ -64,8 +65,10 @@ ROI = { x: 799, y: 105, width: 1000, height: 871 }
 - `mask_url` 指向的 PNG 尺寸 = `ROI.width × ROI.height`，**RGBA**：
   背景為完全透明，命中的像素已上色（IM 紫 `#a855f7`、息肉黃 `#facc15`，
   兩者 alpha 皆 130）。前端直接用 `<img>` 疊上去即可，不需要做任何像素運算。
-  需要數值的話用 `GimResult.score` / `GimResult.area` /
-  `PolypResult.boxes` / `PolypResult.area`，不要去讀 mask 像素。
+  **PNG 存的是「可描邊的形狀」，不是模型的逐像素輸出**——已平滑、已填洞，
+  IM 另外把相鄰的斑塊接起來（見 §4.4）。因此它的覆蓋面積會略大於
+  `GimResult.area`：**數值一律用 `GimResult.score` / `GimResult.area` /
+  `PolypResult.boxes` / `PolypResult.area`，那是模型自己量的，不要去讀 mask 像素。**
 - `PolypResult.boxes` 的座標同樣是 **ROI 像素**，與 mask 共用同一個座標系。
 - gateway 內部無論模型輸入被 resize 成幾乘幾，回傳前一律回到 ROI 尺寸
 
@@ -251,8 +254,34 @@ GNS 原始 16 類：
 取八成。因為是固定值而非「佔本片的比例」，掃描還沒跑完也能用，
 碰到跳過某部位的影片也不會自動達標。`unknown` 永遠不算 seen。
 
+**光源也走同一套平滑**：原始 modality 在 video1.mp4 上翻了 1,230 次（88 次/分鐘），
+跟部位一樣不能直接顯示。`buildModalityTrack(frames)` / `trackModalityAt(track, t)`
+用 1 秒視窗投票（比部位的 3 秒短——光源是人為切換的，乾淨得多，只需要去雜訊）。
+部位與光源共同決定「某個模型在這一幀適不適用」，只平滑其中一個的話，這個判定
+在全片仍會抖 324 次；兩個都平滑之後降到 38 次。
+
 這一層純屬顯示，`FrameRecord` 與所有 API 皆未改變；
-第二頁若也要顯示部位，直接用同一組函式即可，不要另寫一份平滑。
+第二頁若也要顯示部位或光源，直接用同一組函式即可，不要另寫一份平滑。
+
+### 4.5 IM 疊圖的顯示門檻（第一頁的規則）
+
+GIM 是逐幀獨立判斷的，逐幀畫出來會是頻閃而不是疊圖：video1.mp4 的 16,309 個
+胃部 NBI 幀裡只有 339 幀有 mask，散成 136 段，**連續段的中位長度是一幀（0.02 秒）**。
+
+所以第一頁的 `gimFrameAt()` 加了兩層（都定義在 `protocol/lookup.ts`）：
+
+| 常數 | 值 | 作用 |
+|---|---|---|
+| `IM_CONSENSUS_OF` / `IN` | 2 / 3 | GIM 跑過的最近 3 幀要有 2 幀陽性才畫 |
+| `IM_CONSENSUS_WINDOW_S` | 1 | 這 3 幀最遠只往回取 1 秒 |
+| `IM_HOLD_S` | 0.5 | 確認後的發現在畫面上停留多久 |
+
+共識規則刻意跟第二頁 `reportPipeline` 的 episode 規則一致，兩頁對「一個發現」的
+認定才會相同。實測：出現次數 30 → 16 次，被拿掉的正是那些單幀閃光。
+
+停留時間刻意維持在 0.5 秒。拉長確實會讓畫面更穩（1.5 秒時是 11 次、中位 1.85 秒），
+但那是用「輪廓殘留在鏡頭已經移開的黏膜上」換來的——**畫錯位置的輪廓比短暫的輪廓更糟**。
+真正讓疊圖穩下來的是共識，不是停留。
 
 ### 4.2 GIM 的適用範圍
 
@@ -269,10 +298,9 @@ gim 可跑  ⇔  modality == 'NBI'  且  region ∈ { cardia, body, angle, antru
 這條規則走——不向 `/analyze` 要那些幀的 mask，也不顯示既有的：IM overlay 按鈕停用、
 不疊圖。第二頁若要顯示 mask，請自行套同一條規則。
 
-存下來的 mask PNG 仍是模型原本的填色輸出；第一頁在瀏覽器端用 SVG filter
-（`ScopeStage.tsx` 的 `MaskBoundaryFilter`）把它畫成**只有邊框的輪廓**，
-中間不上色——病灶內部的 pit pattern 正是判讀的依據，蓋掉就沒得看了。
-同一個 filter 也用在息肉 mask 上，兩者外觀一致，只有顏色不同。
+mask 一律畫成**只有邊框的輪廓**，中間不上色——病灶內部的 pit pattern 正是判讀的
+依據，蓋掉就沒得看了。描邊由 `components/MaskBoundaryFilter.tsx` 這個共用的
+SVG filter 負責，live 與 report 共用，IM 與息肉也共用（顏色取自 mask 自己）。
 
 ### 4.3 息肉（POLYP）的適用範圍與觸發方式
 
@@ -300,6 +328,31 @@ gateway 端的鏡像在 `backend/protocol.py` 的 `POLYP_REGIONS`。
 所以 `FrameRecord.polyp` 的預設值永遠是 `null`，**只有在有人明確
 用 `POST /analyze` 帶 `polyp: true` 要過之後才會有值**。要過的結果一樣會寫回
 session、一樣會用 `frames` 事件廣播，所以兩個頁面看到的是同一份東西。
+
+### 4.4 mask 的形狀是後端決定的
+
+送到前端的 mask 已經是**可以直接描邊的形狀**，處理在 `backend/masks.py`，
+兩支服務寫檔前各跑一次：
+
+| 步驟 | IM | 息肉 |
+|---|---|---|
+| 平滑（σ=9，模糊後重新取門檻） | ✓ | ✓ |
+| 合併相鄰斑塊（半徑 60） | ✓ | ✗ |
+| 填掉內部空洞 | ✓ | ✓ |
+
+順序不能換：合併是把斑塊撐大到彼此接觸，兩隻手臂接起來就會把中間圍成一個新的洞，
+所以**填洞一定要放在最後**。實測 200 張 IM mask，這個順序殘留 0 個洞。
+
+IM 會合併是因為它是瀰漫性的，模型吐出來的是同一片病灶的碎塊（典型一幀 213 塊、
+366 個洞），逐塊描邊等於在描雜訊；息肉是離散病灶而且畫面上要報數量，
+兩顆靠得近的息肉必須維持兩個輪廓。
+
+**為什麼不在瀏覽器做**：填洞是全域運算，SVG filter 只有局部運算，做不到；
+而且 filter 的半徑單位是 CSS 像素，同一張 mask 在 report 的縮圖和 live 的大畫面上
+會被算成不同形狀。改在後端以 ROI 像素處理之後，兩邊終於一致。
+
+早於這個改動掃描的 session，mask 還是舊的形狀，用
+`python scripts/reshape_masks.py` 就地重寫。
 
 ---
 

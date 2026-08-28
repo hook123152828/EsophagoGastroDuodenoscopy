@@ -17,6 +17,7 @@ import json
 import shutil
 import subprocess
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -232,101 +233,198 @@ def _stride(sampling_fps: float, extract_fps: float) -> int:
     return max(1, round(extract_fps / max(sampling_fps, 1e-6)))
 
 
-async def run_gns(session: Session, client: httpx.AsyncClient) -> None:
-    stride = _stride(
-        session.manifest.sampling.gns_fps, session.manifest.sampling.extract_fps
-    )
-    targets = session.frames[::stride]
+async def _windowed(make_task, count: int, width: int):
+    """Run ``count`` tasks with ``width`` in flight, yielding results in order.
 
-    for start in range(0, len(targets), config.GNS_BATCH):
-        chunk = targets[start : start + config.GNS_BATCH]
-        # Frames the user already jumped to were analysed on demand; don't pay
-        # for them twice.
-        pending = [frame for frame in chunk if frame.gns is None]
-        if pending:
-            response = await client.post(
-                f"{config.GNS_URL}/predict",
-                json={"paths": [str(frame_path(session, f.index)) for f in pending]},
-                timeout=120.0,
-            )
-            response.raise_for_status()
-            for frame, result in zip(pending, response.json()["results"]):
-                frame.gns = GnsResult(**result)
-        session.publish_frames(chunk)
-        session.set_progress(gns=min(1.0, (start + len(chunk)) / max(len(targets), 1)))
-
-    # Frames between GNS samples inherit the nearest earlier classification, so
-    # every frame in the manifest carries a region once the scan is done.
-    if stride > 1:
-        last: Optional[GnsResult] = None
-        for frame in session.frames:
-            if frame.gns is not None:
-                last = frame.gns
-            elif last is not None:
-                frame.gns = last
-    session.set_progress(gns=1.0)
+    Order matters more than it looks: GIM is fed from how far GNS has got, and
+    a frontier that only ever moves forward is what makes "everything before
+    here has been classified" true. Completing out of order would break that,
+    so results are awaited in the order they were submitted even though they
+    are computed together.
+    """
+    pending: deque = deque()
+    submitted = 0
+    while submitted < count or pending:
+        while submitted < count and len(pending) < width:
+            pending.append(asyncio.create_task(make_task(submitted)))
+            submitted += 1
+        yield await pending.popleft()
 
 
-def is_gim_candidate(frame: FrameRecord) -> bool:
-    """Return whether a frame is anatomically and optically valid for GIM."""
-    return (
-        frame.gns is not None
-        and frame.gns.modality == "NBI"
-        and frame.gns.region != "esophagus"
-    )
+async def _in_halves(run, items: list) -> list:
+    """Run ``run`` over ``items``, splitting the batch if the model refuses it.
+
+    Both stages are on the GPU at once now, and a card shared with anything else
+    can have room for one batch but not two. Losing a scan at nine percent
+    because a neighbour spiked is a worse failure than taking longer, so a batch
+    that fails is halved and retried rather than abandoned. A single frame that
+    still fails is a real error and is allowed through.
+    """
+    try:
+        return await run(items)
+    except Exception:
+        if len(items) == 1:
+            raise
+        # Give whatever was holding the memory a moment to give it back.
+        await asyncio.sleep(0.5)
+        middle = len(items) // 2
+        head = await _in_halves(run, items[:middle])
+        tail = await _in_halves(run, items[middle:])
+        return head + tail
 
 
-async def run_gim(session: Session, client: httpx.AsyncClient) -> None:
-    """Run GIM only on non-esophageal NBI frames."""
-    stride = _stride(
-        session.manifest.sampling.gim_fps, session.manifest.sampling.extract_fps
-    )
-    targets = [
-        frame
-        for frame in session.frames[::stride]
-        if is_gim_candidate(frame)
+async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
+    """Classify the procedure and segment it, both at the same time.
+
+    GIM used to wait for GNS to finish the whole video before it started, which
+    left one model idle throughout the other's pass. It does not need to: it
+    only ever looks at frames GNS has already called NBI, so it can follow the
+    classification as it advances instead of following the pass as a whole. The
+    two run as producer and consumer over a queue, which roughly halves the
+    scan on a procedure with much NBI in it and costs nothing on one with none.
+    """
+    sampling = session.manifest.sampling
+    gns_stride = _stride(sampling.gns_fps, sampling.extract_fps)
+    gim_stride = _stride(sampling.gim_fps, sampling.extract_fps)
+
+    targets = session.frames[::gns_stride]
+    batches = [
+        targets[start : start + config.GNS_BATCH]
+        for start in range(0, len(targets), config.GNS_BATCH)
     ]
-    if not targets:
-        session.set_progress(gim=1.0)
-        return
 
     masks_dir = session.directory / "masks"
-    masks_dir.mkdir(parents=True, exist_ok=True)
     session_id = session.manifest.session_id
+    # Bounded so a long NBI run cannot let the queue grow without limit while
+    # GIM, the slower of the two, works through it.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+    state = {"discovered": 0, "processed": 0, "classified": False, "reported": 0.0}
 
-    batch = 8
-    for start in range(0, len(targets), batch):
-        chunk = targets[start : start + batch]
-        pending = [frame for frame in chunk if frame.gim is None]
-        if pending:
-            response = await client.post(
-                f"{config.GIM_URL}/predict",
-                json={
-                    "items": [
-                        {
-                            "path": str(frame_path(session, frame.index)),
-                            "mask_out": str(masks_dir / f"{frame.index + 1:06d}.png"),
-                        }
-                        for frame in pending
-                    ]
-                },
-                timeout=180.0,
-            )
-            response.raise_for_status()
-            for frame, result in zip(pending, response.json()["results"]):
-                frame.gim = GimResult(
-                    score=result["score"],
-                    area=result["area"],
-                    mask_url=(
-                        f"/files/{session_id}/masks/{frame.index + 1:06d}.png"
-                        if result["has_mask"]
-                        else None
-                    ),
-                )
-        session.publish_frames(chunk)
-        session.set_progress(gim=min(1.0, (start + len(chunk)) / len(targets)))
+    async def classify() -> None:
+        async def gns_batch(index: int) -> List[FrameRecord]:
+            batch = batches[index]
+            # Frames the user already jumped to were analysed on demand; don't
+            # pay for them twice.
+            pending = [frame for frame in batch if frame.gns is None]
+            if pending:
+                async def classify_frames(frames: List[FrameRecord]) -> list:
+                    response = await client.post(
+                        f"{config.GNS_URL}/predict",
+                        json={
+                            "paths": [
+                                str(frame_path(session, f.index)) for f in frames
+                            ]
+                        },
+                        timeout=120.0,
+                    )
+                    response.raise_for_status()
+                    return response.json()["results"]
 
-    session.set_progress(gim=1.0)
+                for frame, result in zip(
+                    pending, await _in_halves(classify_frames, pending)
+                ):
+                    frame.gns = GnsResult(**result)
+            return batch
+
+        # Frames between GNS samples inherit the nearest earlier classification.
+        # Done as the frontier advances rather than in a pass at the end, so a
+        # GIM target that sits between two samples is available immediately.
+        frontier = 0
+        inherited: Optional[GnsResult] = None
+        done = 0
+
+        async for batch in _windowed(gns_batch, len(batches), config.SCAN_CONCURRENCY):
+            session.publish_frames(batch)
+            done += len(batch)
+            session.set_progress(gns=min(1.0, done / max(len(targets), 1)))
+
+            ready: List[FrameRecord] = []
+            while frontier <= batch[-1].index:
+                frame = session.frames[frontier]
+                if frame.gns is not None:
+                    inherited = frame.gns
+                elif inherited is not None:
+                    frame.gns = inherited
+                if (
+                    frontier % gim_stride == 0
+                    and frame.gns is not None
+                    and frame.gns.modality == "NBI"
+                    and frame.gim is None
+                ):
+                    ready.append(frame)
+                frontier += 1
+
+            if ready:
+                state["discovered"] += len(ready)
+                await queue.put(ready)
+
+        state["classified"] = True
+        session.set_progress(gns=1.0)
+        await queue.put(None)
+
+    async def segment() -> None:
+        """GIM is NBI-only — white-light frames never reach this queue."""
+        batch_size = 8
+        while True:
+            ready = await queue.get()
+            if ready is None:
+                break
+
+            masks_dir.mkdir(parents=True, exist_ok=True)
+            for start in range(0, len(ready), batch_size):
+                chunk = ready[start : start + batch_size]
+
+                async def segment_frames(frames: List[FrameRecord]) -> list:
+                    response = await client.post(
+                        f"{config.GIM_URL}/predict",
+                        json={
+                            "items": [
+                                {
+                                    "path": str(frame_path(session, frame.index)),
+                                    "mask_out": str(
+                                        masks_dir / f"{frame.index + 1:06d}.png"
+                                    ),
+                                }
+                                for frame in frames
+                            ]
+                        },
+                        timeout=180.0,
+                    )
+                    response.raise_for_status()
+                    return response.json()["results"]
+
+                for frame, result in zip(
+                    chunk, await _in_halves(segment_frames, chunk)
+                ):
+                    frame.gim = GimResult(
+                        score=result["score"],
+                        area=result["area"],
+                        mask_url=(
+                            f"/files/{session_id}/masks/{frame.index + 1:06d}.png"
+                            if result["has_mask"]
+                            else None
+                        ),
+                    )
+                session.publish_frames(chunk)
+                state["processed"] += len(chunk)
+
+                # How much is owed is not known until GNS has seen the whole
+                # video, so until then the readout is held below completion
+                # rather than claiming to be done and then finding more work.
+                # It is also pinned to its high-water mark: the denominator
+                # grows as GNS turns up more NBI, and a bar that slides
+                # backwards reads as a fault rather than as new work arriving.
+                share = state["processed"] / max(state["discovered"], 1)
+                if not state["classified"]:
+                    share = min(share, 0.99)
+                state["reported"] = max(state["reported"], share)
+                session.set_progress(gim=state["reported"])
+
+        session.set_progress(gim=1.0)
+
+    # gather rather than two awaits: an exception in either must not leave the
+    # other running against a session that is already failing.
+    await asyncio.gather(classify(), segment())
 
 
 async def process(session: Session) -> None:
@@ -334,8 +432,7 @@ async def process(session: Session) -> None:
         await extract_frames(session)
         session.set_status("scanning")
         async with httpx.AsyncClient() as client:
-            await run_gns(session, client)
-            await run_gim(session, client)
+            await run_scan(session, client)
         session.save_frames()
         session.set_status("ready")
     except Exception as error:  # surfaced to both pages via manifest + SSE
