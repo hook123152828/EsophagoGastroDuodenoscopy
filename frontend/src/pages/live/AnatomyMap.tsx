@@ -11,51 +11,48 @@ const REGION_COLOR: Record<RegionId, string> = {
 }
 
 /**
- * Oesophagus down from the top, greater curvature ballooning right, antrum
- * sweeping down-left into the pyloric hook.
+ * The stomach, laid out as in the anatomy plate this diagram was drawn from:
+ * the oesophagus entering from the upper left, the cardia where it meets the
+ * stomach, the fundus doming up and to the right of it, the greater curvature
+ * ballooning down the right, and the antrum tapering left into the pylorus.
  *
  * Drawn as a silhouette rather than an outline: the organ is composed of two
  * overlapping shapes, and filling *through the clip* unions them seamlessly.
  * Stroking each sub-shape instead would expose the seam between them.
  */
 const STOMACH =
-  'M97 4 L117 4 ' +
-  'C118 22 120 36 124 48 ' + // oesophagus, kept narrow before it flares
-  'C133 58 143 60 154 66 ' +
-  'C178 84 188 118 180 150 ' + // greater curvature, ballooning right
-  'C172 182 150 203 120 210 ' +
-  'C100 216 78 214 62 204 ' + // bottom, sweeping left into the antrum
-  'C72 192 89 174 97 150 ' +
-  'C104 120 102 96 93 80 ' + // lesser curvature, concave
-  'C85 66 73 58 74 46 ' + // fundus, doming up and left of the cardia
-  'C75 34 86 32 97 38 Z'
+  'M70 0 L92 0 ' +
+  'C95 20 99 40 106 54 ' + // oesophagus, leaning right into the cardia
+  'C128 28 166 32 184 66 ' + // fundus, doming up and right of the cardia
+  'C198 92 200 132 192 162 ' + // greater curvature, ballooning right
+  'C184 196 162 220 130 228 ' +
+  'C106 234 80 228 62 208 ' + // antrum, tapering left into the pylorus
+  'C74 196 92 182 110 168 ' + // its upper border, up to the angular incisure
+  'C106 150 96 104 84 66 ' + // lesser curvature, concave
+  'C80 52 74 26 70 8 Z'
 
-/** Pylorus and duodenal cap — the hook at the bottom left. */
+/** Pyloric ring and duodenal cap — the C hooking down at the bottom left. */
 const DUODENUM =
-  'M67 194 ' +
-  'C49 199 33 210 29 227 ' +
-  'C25 244 45 253 55 242 ' +
-  'C64 232 53 222 43 228 ' +
-  'C34 232 35 219 46 213 ' +
-  'C54 208 63 205 70 203 Z'
+  'M74 202 C46 194 20 206 14 226 C8 248 24 264 44 260 ' +
+  'C56 258 62 248 58 238 C55 230 44 230 42 239 ' +
+  'C40 247 30 246 28 236 C25 220 42 210 68 214 Z'
 
 /**
  * Region slabs, drawn clipped to the silhouette.
  *
  * They tile the viewBox without overlapping, so the clip decides each region's
- * shape. The lower part splits by x because the antrum and duodenum run
- * sideways — banding the whole diagram horizontally would colour the hook as
- * antrum.
+ * shape. The oesophagus slab is bounded on the right and the duodenum on the
+ * right of the pylorus, because both sit beside the stomach rather than above
+ * or below it — banding the whole diagram horizontally would colour the fundus
+ * as oesophagus and the duodenal cap as antrum.
  */
 const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
-  // Bounded on the left as well, so the fundus dome beside the tube is not
-  // coloured as oesophagus.
-  esophagus: 'M96 0 H200 V52 H96 Z',
-  cardia: 'M0 0 H96 V104 H0 Z M96 52 H200 V104 H96 Z',
-  body: 'M0 104 H200 V156 H0 Z',
-  angle: 'M0 156 H200 V192 H0 Z',
-  antrum: 'M62 192 H200 V260 H62 Z',
-  duodenum: 'M0 192 H62 V260 H0 Z',
+  esophagus: 'M0 0 H106 V54 H0 Z',
+  cardia: 'M106 0 H200 V100 H106 Z M0 54 H106 V100 H0 Z',
+  body: 'M0 100 H200 V150 H0 Z',
+  angle: 'M0 150 H200 V176 H0 Z',
+  antrum: 'M62 176 H200 V260 H62 Z',
+  duodenum: 'M0 176 H62 V260 H0 Z',
 }
 
 interface Props {

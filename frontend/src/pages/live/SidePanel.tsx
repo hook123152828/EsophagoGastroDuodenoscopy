@@ -1,4 +1,4 @@
-import { REGION_LABEL, REGION_ORDER, type FrameRecord, type RegionId } from '@/protocol'
+import { REGION_LABEL, REGION_ORDER, type RegionId } from '@/protocol'
 
 import AnatomyMap from './AnatomyMap'
 
@@ -13,7 +13,9 @@ const REGION_COLOR: Record<RegionId, string> = {
 }
 
 interface Props {
-  frame: FrameRecord | null
+  /** The stabilised site, not the raw per-frame classification. */
+  region: RegionId
+  /** Regions watched for long enough to count as examined. */
   visited: Set<RegionId>
 }
 
@@ -22,9 +24,7 @@ interface Props {
  * coverage list are what the operator reads at a glance, so they get the whole
  * width rather than competing with per-frame numbers.
  */
-export default function SidePanel({ frame, visited }: Props) {
-  const current = frame?.gns?.region ?? 'unknown'
-
+export default function SidePanel({ region: current, visited }: Props) {
   return (
     <aside className="flex min-w-0 flex-col gap-8 overflow-y-auto border-l border-console-line bg-console-panel/40 p-8">
       <header>
