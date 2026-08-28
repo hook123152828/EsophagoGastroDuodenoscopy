@@ -39,8 +39,16 @@ export const IM_CONSENSUS_OF = 2
 export const IM_CONSENSUS_IN = 3
 export const IM_CONSENSUS_WINDOW_S = 1
 
-/** How long a confirmed finding stays on screen after the frame that made it. */
-export const IM_HOLD_S = 1.5
+/**
+ * How long a confirmed finding stays on screen after the frame that made it.
+ *
+ * Held only as long as it is still describing what is under the scope. A
+ * longer hold does make the overlay calmer — at 1.5 s the same procedure shows
+ * 11 findings with a median length of 1.85 s rather than 16 at 0.57 s — but it
+ * buys that by leaving an outline over mucosa the scope has already moved off,
+ * and an outline in the wrong place is worse than one that was brief.
+ */
+export const IM_HOLD_S = 0.5
 
 /**
  * Whether the finding on `frames[index]` is corroborated by its neighbours.
@@ -78,10 +86,11 @@ function imConfirmed(frames: FrameRecord[], index: number): boolean {
  * GIM runs at a lower rate than playback and skips white-light frames
  * entirely, so the nearest frame often has nothing to show. `maxAge` caps how
  * stale a mask may be before it is dropped — without it, a mask from a
- * previous NBI segment would linger over unrelated mucosa. It is held long
- * enough to be read rather than merely noticed: over video1.mp4 this turns 30
- * appearances with a median length of half a second into 11 with a median of
- * 1.85 s, over almost exactly the same total time on screen.
+ * previous NBI segment would linger over unrelated mucosa.
+ *
+ * What steadies the overlay is the corroboration rather than the holding: over
+ * video1.mp4 it turns 30 appearances into 16, and the ones it removes are the
+ * single-frame flashes.
  */
 export function gimFrameAt(
   frames: FrameRecord[],
