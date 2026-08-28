@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the three model microservices and the gateway.
+# Start the four model microservices and the gateway.
 # Each model runs in its own conda environment; override the names below if
 # yours differ.  Logs land in logs/.
 set -euo pipefail
@@ -10,6 +10,7 @@ cd "$ROOT"
 GNS_ENV="${GNS_ENV:-GNS}"
 GIM_ENV="${GIM_ENV:-IM_web}"
 CGI_ENV="${CGI_ENV:-cgi_env}"
+POLYP_ENV="${POLYP_ENV:-polyp_env}"
 GATEWAY_ENV="${GATEWAY_ENV:-endo-gateway}"
 if [[ -z "${CONDA_BASE:-}" ]]; then
   if command -v conda >/dev/null 2>&1; then
@@ -91,6 +92,7 @@ echo "starting services..."
 launch "$GNS_ENV"     backend.servers.gns_server gns
 launch "$GIM_ENV"     backend.servers.gim_server gim
 launch "$CGI_ENV"     backend.servers.cgi_server cgi
+launch "$POLYP_ENV"   backend.servers.polyp_server polyp
 launch "$GATEWAY_ENV" backend.gateway            gateway
 
 echo
@@ -101,6 +103,7 @@ wait_for gateway "http://127.0.0.1:8080/api/health" || failed=1
 wait_for cgi     "http://127.0.0.1:8002/health"     || failed=1
 wait_for gns     "http://127.0.0.1:8000/health"     || failed=1
 wait_for gim     "http://127.0.0.1:8001/health"     || failed=1
+wait_for polyp   "http://127.0.0.1:8003/health"     || failed=1
 
 echo
 probe http://127.0.0.1:8080/api/health || echo "gateway not responding"

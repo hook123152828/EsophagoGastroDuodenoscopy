@@ -3,6 +3,8 @@
 /CGI/
 /GIM/
 /GNS/
+/Polyp/
+/MedSAM/
 
 # Procedure videos (multi-GB) and their annotation sheets
 /video/

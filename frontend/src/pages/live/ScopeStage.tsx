@@ -1,10 +1,15 @@
 import { useEffect, useState, type RefObject } from 'react'
 
 import {
+  MASK_BOUNDARY_FILTER,
+  MaskBoundaryFilter,
+} from '@/components/MaskBoundaryFilter'
+import {
   fileUrl,
   REGION_LABEL,
   roiCropStyle,
   type FrameRecord,
+  type RegionId,
   type SessionManifest,
 } from '@/protocol'
 
@@ -12,8 +17,12 @@ interface Props {
   manifest: SessionManifest
   videoRef: RefObject<HTMLVideoElement | null>
   frame: FrameRecord | null
+  /** Stabilised site, so the caption never contradicts the site panel. */
+  region: RegionId
   maskFrame: FrameRecord | null
   showMask: boolean
+  polypFrame: FrameRecord | null
+  showPolyp: boolean
 }
 
 /**
@@ -29,8 +38,11 @@ export default function ScopeStage({
   manifest,
   videoRef,
   frame,
+  region,
   maskFrame,
   showMask,
+  polypFrame,
+  showPolyp,
 }: Props) {
   // A callback ref rather than useRef: the box is remounted when the page
   // rearranges (layout mode), and a plain ref would leave the observer watching
@@ -80,10 +92,12 @@ export default function ScopeStage({
   }, [videoRef, manifest.roi, box])
 
   const modality = frame?.gns?.modality ?? null
-  const region = frame?.gns?.region ?? 'unknown'
   const gim = maskFrame?.gim ?? null
-  const alerting = showMask && gim !== null && gim.score >= 1
+  const polyp = showPolyp ? (polypFrame?.polyp ?? null) : null
   const maskVisible = showMask && Boolean(maskFrame?.gim?.mask_url)
+  const polypVisible = Boolean(polyp?.mask_url)
+  const alerting =
+    (showMask && gim !== null && gim.score >= 1) || Boolean(polyp?.boxes.length)
 
   return (
     <div ref={setBox} className="flex h-full w-full items-center justify-center">
@@ -103,10 +117,24 @@ export default function ScopeStage({
           playsInline
         />
 
+        {(maskVisible || polypVisible) && <MaskBoundaryFilter />}
+
         {maskVisible && (
           <img
             src={fileUrl(maskFrame!.gim!.mask_url!)}
             alt=""
+            style={{ filter: MASK_BOUNDARY_FILTER }}
+            className="pointer-events-none absolute inset-0 h-full w-full"
+          />
+        )}
+
+        {/* Drawn over the IM outline: where both models fire on the same
+            mucosa, the discrete finding is the one to keep legible. */}
+        {polypVisible && (
+          <img
+            src={fileUrl(polyp!.mask_url!)}
+            alt=""
+            style={{ filter: MASK_BOUNDARY_FILTER }}
             className="pointer-events-none absolute inset-0 h-full w-full"
           />
         )}
@@ -128,11 +156,21 @@ export default function ScopeStage({
                 </span>
               )}
             </span>
-            {gim && showMask && (
-              <span className="rounded bg-black/60 px-3 py-1.5 text-sm text-console-text backdrop-blur-sm">
-                IM score {gim.score} · {gim.area.toFixed(1)}%
-              </span>
-            )}
+            <span className="flex flex-col items-end gap-1.5">
+              {polyp !== null && polyp.boxes.length > 0 && (
+                <span className="rounded bg-black/60 px-3 py-1.5 text-sm text-polyp backdrop-blur-sm">
+                  {polyp.boxes.length === 1
+                    ? '1 polyp'
+                    : `${polyp.boxes.length} polyps`}{' '}
+                  · {polyp.area.toFixed(1)}%
+                </span>
+              )}
+              {gim && showMask && (
+                <span className="rounded bg-black/60 px-3 py-1.5 text-sm text-console-text backdrop-blur-sm">
+                  IM score {gim.score} · {gim.area.toFixed(1)}%
+                </span>
+              )}
+            </span>
           </div>
         </div>
       </div>

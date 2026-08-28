@@ -45,6 +45,12 @@ def region_of(class_name: str) -> RegionId:
     return REGION_MAP.get(class_name.split("_")[0], "unknown")
 
 
+# Where each downstream model is defined.  Both are narrower than the model's
+# own input check, and both are mirrored in frontend/src/protocol/types.ts.
+GIM_REGIONS: List[RegionId] = ["cardia", "body", "angle", "antrum"]
+POLYP_REGIONS: List[RegionId] = ["cardia", "body", "angle", "antrum"]
+
+
 def modality_of(class_name: str) -> Optional[Literal["WL", "NBI"]]:
     """``D`` and ``none`` carry no modality; everything else does."""
     if class_name.endswith("_NBI"):
@@ -66,9 +72,9 @@ class Roi(BaseModel):
 
 
 class Sampling(BaseModel):
-    extract_fps: float = 60
-    gns_fps: float = 60
-    gim_fps: float = 60
+    extract_fps: float = 15
+    gns_fps: float = 15
+    gim_fps: float = 5
 
 
 class VideoInfo(BaseModel):
@@ -116,12 +122,38 @@ class GimResult(BaseModel):
     mask_url: Optional[str] = None
 
 
+class PolypBox(BaseModel):
+    """Detector output, in ROI pixels — the same frame everything else uses."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    confidence: float
+
+
+class PolypResult(BaseModel):
+    """Detection and segmentation of gastric polyps.
+
+    Two models in series: the detector proposes boxes, MedSAM turns each box
+    into a mask.  ``mask_url`` is every mask composited into one RGBA PNG, so
+    the front-end draws it exactly the way it draws the IM mask.
+    """
+
+    boxes: List[PolypBox]
+    area: float  # percentage of the ROI covered by the masks, 0..100
+    mask_url: Optional[str] = None  # None when nothing was detected
+
+
 class FrameRecord(BaseModel):
     index: int
     t: float
     image_url: str
     gns: Optional[GnsResult] = None
     gim: Optional[GimResult] = None
+    # Only ever set when it was asked for: unlike GNS and GIM, the polyp pass
+    # is never part of the background scan.  See AnalyzeRequest.polyp.
+    polyp: Optional[PolypResult] = None
 
 
 class CreateSessionRequest(BaseModel):
@@ -133,6 +165,10 @@ class AnalyzeRequest(BaseModel):
     """Analyse whatever is on screen at ``t`` right now, ahead of the scan."""
 
     t: float
+    # Opt-in, because the polyp pass costs roughly ten times a GIM frame and
+    # nothing runs it in the background.  Callers ask for it only while they
+    # are actually going to show it.
+    polyp: bool = False
 
 
 class CgiRequest(BaseModel):

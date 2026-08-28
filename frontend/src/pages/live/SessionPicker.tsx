@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import {
   createSession,
+  deleteSession,
   listSessions,
   listVideos,
   type SessionManifest,
@@ -22,6 +23,10 @@ export default function SessionPicker({ onOpen }: Props) {
   const [sessions, setSessions] = useState<SessionManifest[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Deleting throws away several GB of extracted frames and cannot be undone,
+  // so the button asks once before it does anything.
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   useEffect(() => {
     listVideos().then(setVideos).catch((cause) => setError(String(cause)))
@@ -36,6 +41,22 @@ export default function SessionPicker({ onOpen }: Props) {
     } catch (cause) {
       setError(String(cause))
       setBusy(false)
+    }
+  }
+
+  async function remove(sessionId: string) {
+    setDeleting(sessionId)
+    setError(null)
+    try {
+      await deleteSession(sessionId)
+      setSessions((current) =>
+        current.filter((session) => session.session_id !== sessionId),
+      )
+    } catch (cause) {
+      setError(String(cause))
+    } finally {
+      setDeleting(null)
+      setConfirming(null)
     }
   }
 
@@ -99,11 +120,11 @@ export default function SessionPicker({ onOpen }: Props) {
           </h2>
           <ul className="divide-y divide-console-line rounded-lg border border-console-line">
             {sessions.slice(0, 8).map((session) => (
-              <li key={session.session_id}>
+              <li key={session.session_id} className="flex items-center">
                 <button
                   type="button"
                   onClick={() => onOpen(session.session_id)}
-                  className="flex w-full items-center justify-between px-4 py-3 text-left transition hover:bg-console-panel"
+                  className="flex min-w-0 flex-1 items-center justify-between px-4 py-3 text-left transition hover:bg-console-panel"
                 >
                   <span className="text-sm text-console-text">
                     {session.video.filename}
@@ -112,6 +133,32 @@ export default function SessionPicker({ onOpen }: Props) {
                     <span>{session.frame_count} frames</span>
                     <StatusChip status={session.status} />
                   </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={deleting === session.session_id}
+                  onClick={() =>
+                    confirming === session.session_id
+                      ? remove(session.session_id)
+                      : setConfirming(session.session_id)
+                  }
+                  onBlur={() =>
+                    setConfirming((current) =>
+                      current === session.session_id ? null : current,
+                    )
+                  }
+                  title="Delete this session and the frames it extracted"
+                  className={`shrink-0 px-4 py-3 text-xs transition disabled:opacity-40 ${
+                    confirming === session.session_id
+                      ? 'font-medium text-scope-alert'
+                      : 'text-console-muted hover:text-scope-alert'
+                  }`}
+                >
+                  {deleting === session.session_id
+                    ? 'deleting…'
+                    : confirming === session.session_id
+                      ? 'confirm'
+                      : 'delete'}
                 </button>
               </li>
             ))}
