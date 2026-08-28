@@ -450,7 +450,12 @@ function GimEvidenceCard({
           loading="lazy"
         />
         {frame.gim?.mask_url && (
-          <GimBoundaryOverlay src={fileUrl(frame.gim.mask_url)} />
+          <img
+            src={fileUrl(frame.gim.mask_url)}
+            alt=""
+            className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+            loading="lazy"
+          />
         )}
         <span className="absolute top-2 left-2 rounded-md bg-slate-950/80 px-2.5 py-1 text-xs font-medium text-white shadow-sm backdrop-blur-sm">
           {REGION_LABEL[region]}
@@ -510,7 +515,11 @@ function GimImageDialog({
           className="absolute inset-0 h-full w-full object-contain"
         />
         {frame.gim?.mask_url && (
-          <GimBoundaryOverlay src={fileUrl(frame.gim.mask_url)} fit="contain" />
+          <img
+            src={fileUrl(frame.gim.mask_url)}
+            alt=""
+            className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+          />
         )}
 
         <div className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 rounded-lg bg-slate-950/85 px-4 py-2 text-center text-sm text-white shadow-lg backdrop-blur-sm">
@@ -663,83 +672,6 @@ function CgiEvidenceGrid({ evidence }: { evidence: CgiEvidence[] }) {
         ))}
       </div>
     </div>
-  )
-}
-
-function GimBoundaryOverlay({
-  src,
-  fit = 'cover',
-}: {
-  src: string
-  fit?: 'cover' | 'contain'
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const image = new Image()
-    image.crossOrigin = 'anonymous'
-    image.decoding = 'async'
-    image.onload = () => {
-      if (cancelled || !canvasRef.current) return
-
-      const canvas = canvasRef.current
-      canvas.width = image.naturalWidth
-      canvas.height = image.naturalHeight
-      const context = canvas.getContext('2d', { willReadFrequently: true })
-      if (!context) return
-
-      context.clearRect(0, 0, canvas.width, canvas.height)
-      context.drawImage(image, 0, 0)
-      const source = context.getImageData(0, 0, canvas.width, canvas.height)
-      const output = context.createImageData(canvas.width, canvas.height)
-      // Four source pixels stay subtle in the report grid, then become clearly
-      // visible when the same ROI is expanded to the full viewport.
-      const radius = 4
-
-      for (let y = 0; y < canvas.height; y += 1) {
-        for (let x = 0; x < canvas.width; x += 1) {
-          const pixel = y * canvas.width + x
-          if (source.data[pixel * 4 + 3] === 0) continue
-
-          const boundary =
-            x < radius ||
-            x >= canvas.width - radius ||
-            y < radius ||
-            y >= canvas.height - radius ||
-            source.data[(pixel - radius) * 4 + 3] === 0 ||
-            source.data[(pixel + radius) * 4 + 3] === 0 ||
-            source.data[(pixel - radius * canvas.width) * 4 + 3] === 0 ||
-            source.data[(pixel + radius * canvas.width) * 4 + 3] === 0
-
-          if (boundary) {
-            const offset = pixel * 4
-            output.data[offset] = 168
-            output.data[offset + 1] = 85
-            output.data[offset + 2] = 247
-            output.data[offset + 3] = 235
-          }
-        }
-      }
-
-      context.putImageData(output, 0, 0)
-    }
-    image.src = src
-
-    return () => {
-      cancelled = true
-      image.onload = null
-    }
-  }, [src])
-
-  return (
-    <canvas
-      ref={canvasRef}
-      aria-hidden="true"
-      className={`pointer-events-none absolute inset-0 h-full w-full ${
-        fit === 'contain' ? 'object-contain' : 'object-cover'
-      }`}
-    />
   )
 }
 
