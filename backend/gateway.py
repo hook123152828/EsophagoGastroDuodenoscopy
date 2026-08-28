@@ -14,9 +14,10 @@ See docs/PROTOCOL.md — that file is the contract, this file implements it.
 
 import asyncio
 import json
+import shutil
 import subprocess
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -30,12 +31,14 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import config
 from backend.protocol import (
+    POLYP_REGIONS,
     AnalyzeRequest,
     CgiRequest,
     CreateSessionRequest,
     FrameRecord,
     GimResult,
     GnsResult,
+    PolypResult,
     Progress,
     Roi,
     Sampling,
@@ -54,6 +57,11 @@ class Session:
         self.manifest = manifest
         self.frames: List[FrameRecord] = []
         self.subscribers: List[asyncio.Queue] = []
+        # Held so the session can be torn down mid-flight: both the pipeline
+        # task and ffmpeg keep writing into the directory otherwise, and
+        # Session.save() would recreate what was just deleted.
+        self.task: Optional[asyncio.Task] = None
+        self.ffmpeg: Optional[asyncio.subprocess.Process] = None
         # Serialises on-demand analysis so a misbehaving client cannot pile
         # unbounded concurrent inference onto the GPU.
         self.analyze_lock = asyncio.Lock()
@@ -188,6 +196,7 @@ async def extract_frames(session: Session) -> None:
         "-q:v", "3", str(frames_dir / "%06d.jpg"),
         stderr=asyncio.subprocess.PIPE,
     )
+    session.ffmpeg = process
 
     expected = max(
         1,
@@ -214,6 +223,7 @@ async def extract_frames(session: Session) -> None:
     elif actual < len(session.frames):
         del session.frames[actual:]
 
+    session.ffmpeg = None
     session.manifest.frame_count = len(session.frames)
     session.set_progress(extract=1.0)
 
@@ -399,10 +409,13 @@ async def health() -> dict:
             except httpx.RequestError:
                 return False
 
-        gns, gim, cgi = await asyncio.gather(
-            up(config.GNS_URL), up(config.GIM_URL), up(config.CGI_URL)
+        gns, gim, cgi, polyp = await asyncio.gather(
+            up(config.GNS_URL),
+            up(config.GIM_URL),
+            up(config.CGI_URL),
+            up(config.POLYP_URL),
         )
-    return {"gateway": True, "gns": gns, "gim": gim, "cgi": cgi}
+    return {"gateway": True, "gns": gns, "gim": gim, "cgi": cgi, "polyp": polyp}
 
 
 @app.get("/api/videos")
@@ -501,7 +514,7 @@ async def create_session(request: CreateSessionRequest) -> SessionManifest:
     manifest.frame_count = len(session.frames)
     session.save()
     SESSIONS[manifest.session_id] = session
-    asyncio.create_task(process(session))
+    session.task = asyncio.create_task(process(session))
     return manifest
 
 
@@ -517,6 +530,31 @@ def list_sessions() -> List[SessionManifest]:
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str) -> SessionManifest:
     return _session(session_id).manifest
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> dict:
+    """Forget a session and delete everything it wrote.
+
+    A session that is still processing is stopped first: the pipeline task is
+    cancelled and its ffmpeg killed, because either would go on writing into
+    the directory — ``Session.save()`` recreates it — and leave behind the half
+    a session this is meant to clear out.
+
+    Frames are the bulk of it: a 14-minute procedure at 60 fps is ~4 GB.
+    """
+    session = _session(session_id)
+    SESSIONS.pop(session_id, None)
+
+    if session.task is not None:
+        session.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await session.task
+    if session.ffmpeg is not None and session.ffmpeg.returncode is None:
+        session.ffmpeg.kill()
+
+    shutil.rmtree(session.directory, ignore_errors=True)
+    return {"deleted": session_id}
 
 
 @app.get("/api/sessions/{session_id}/frames")
@@ -562,12 +600,40 @@ async def extract_single_frame(session: Session, index: int) -> None:
         raise HTTPException(500, f"ffmpeg seek failed: {stderr.decode()[:300]}")
 
 
+def pending(frame: FrameRecord) -> bool:
+    """Whether anything is still owed on this frame.
+
+    A white-light frame is finished once GNS has run — GIM is NBI-only. An NBI
+    frame is not: the scan runs its GIM pass only after GNS has covered the
+    whole procedure, so for most of a session the frame under the playhead has
+    a site but no mask, and closing that gap is what on-demand analysis is for.
+    """
+    if frame.gns is None:
+        return True
+    return frame.gns.modality == "NBI" and frame.gim is None
+
+
+def polyp_applies(gns: Optional[GnsResult]) -> bool:
+    """Whether the polyp pass is defined on a frame GNS classified this way.
+
+    The detector was fine-tuned on white-light stomach and nothing else, so
+    NBI and everything outside the stomach are refused here rather than served
+    a confident answer to a question the model was never asked.
+    """
+    return gns is not None and gns.modality == "WL" and gns.region in POLYP_REGIONS
+
+
 @app.post("/api/sessions/{session_id}/analyze")
 async def analyze(session_id: str, request: AnalyzeRequest) -> FrameRecord:
-    """Classify the frame at ``t`` now, rather than waiting for the scan.
+    """Analyse the frame at ``t`` now, rather than waiting for the scan.
 
-    Results are written back into the session, so the background scan skips
-    them and page 2 sees exactly what page 1 showed.
+    Fills in whatever that frame is still missing — the site, the IM mask, or
+    both. Results are written back into the session, so the background scan
+    skips them and page 2 sees exactly what page 1 showed.
+
+    ``polyp`` additionally runs detection plus segmentation, which no scan ever
+    does: it costs roughly ten times a GIM frame, so it is opt-in and asked for
+    only by a caller about to show or record the result.
     """
     session = _session(session_id)
     if not session.frames:
@@ -578,24 +644,33 @@ async def analyze(session_id: str, request: AnalyzeRequest) -> FrameRecord:
         len(session.frames) - 1,
     )
     frame = session.frames[index]
-    if frame.gns is not None:
+
+    def owed() -> bool:
+        if pending(frame):
+            return True
+        # Applicability needs the site, so a frame without GNS yet is already
+        # pending above; by here the answer is known.
+        return request.polyp and frame.polyp is None and polyp_applies(frame.gns)
+
+    if not owed():
         return frame  # already covered by the scan or an earlier request
 
     async with session.analyze_lock:
-        if frame.gns is not None:
+        if not owed():
             return frame
 
         if not frame_path(session, index).exists():
             await extract_single_frame(session, index)
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{config.GNS_URL}/predict",
-                json={"paths": [str(frame_path(session, index))]},
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            frame.gns = GnsResult(**response.json()["results"][0])
+            if frame.gns is None:
+                response = await client.post(
+                    f"{config.GNS_URL}/predict",
+                    json={"paths": [str(frame_path(session, index))]},
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                frame.gns = GnsResult(**response.json()["results"][0])
 
             # GIM is valid only for non-esophageal NBI frames — the same rule
             # used by the background scan.
@@ -622,6 +697,36 @@ async def analyze(session_id: str, request: AnalyzeRequest) -> FrameRecord:
                     area=result["area"],
                     mask_url=(
                         f"/files/{session_id}/masks/{index + 1:06d}.png"
+                        if result["has_mask"]
+                        else None
+                    ),
+                )
+
+            if request.polyp and frame.polyp is None and polyp_applies(frame.gns):
+                # A directory of its own: a frame can carry both an IM mask and
+                # a polyp mask, and they would otherwise collide on the index.
+                polyp_dir = session.directory / "polyp_masks"
+                polyp_dir.mkdir(parents=True, exist_ok=True)
+                mask_out = polyp_dir / f"{index + 1:06d}.png"
+                response = await client.post(
+                    f"{config.POLYP_URL}/predict",
+                    json={
+                        "items": [
+                            {
+                                "path": str(frame_path(session, index)),
+                                "mask_out": str(mask_out),
+                            }
+                        ]
+                    },
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                result = response.json()["results"][0]
+                frame.polyp = PolypResult(
+                    boxes=result["boxes"],
+                    area=result["area"],
+                    mask_url=(
+                        f"/files/{session_id}/polyp_masks/{index + 1:06d}.png"
                         if result["has_mask"]
                         else None
                     ),
