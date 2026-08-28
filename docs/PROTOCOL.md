@@ -23,12 +23,15 @@ video1.mp4 (1920×1080, 60fps)
 │ gateway  :8080                               │
 │  1. ffmpeg 依固定 ROI 裁切抽幀 (extract_fps)  │
 │  2. 全片跑 GNS        (gns_fps)              │
-│  3. 只對 NBI 幀跑 GIM (gim_fps)              │
+│  3. 只對「胃部 NBI」幀跑 GIM (gim_fps)        │
 │  4. status → ready                           │
 │                                              │
 │  以上每算完一批就用 frames 事件推出去；        │
 │  另有 /analyze 可對任一時間點就地推一幀，      │
 │  結果寫回同一份 session，兩條路不重複計算。    │
+│                                              │
+│  息肉（POLYP）不在上面這條掃描裡：它貴上一個   │
+│  數量級，只有 /analyze 明確要求時才跑。見 §6。 │
 └──────────────────────────────────────────────┘
       │                          │
       │ 第一頁讀                  │ 第二頁讀（相同的 API，沒有特權通道）
@@ -59,9 +62,11 @@ ROI = { x: 799, y: 105, width: 1000, height: 871 }
 
 - `image_url` 指向的 JPEG 尺寸 = `ROI.width × ROI.height`
 - `mask_url` 指向的 PNG 尺寸 = `ROI.width × ROI.height`，**RGBA**：
-  背景為完全透明，IM 像素已上色（紫，alpha 130）。
-  前端直接用 `<img>` 疊上去即可，不需要做任何像素運算。
-  需要數值的話用 `GimResult.score` / `GimResult.area`，不要去讀 mask 像素。
+  背景為完全透明，命中的像素已上色（IM 紫 `#a855f7`、息肉黃 `#facc15`，
+  兩者 alpha 皆 130）。前端直接用 `<img>` 疊上去即可，不需要做任何像素運算。
+  需要數值的話用 `GimResult.score` / `GimResult.area` /
+  `PolypResult.boxes` / `PolypResult.area`，不要去讀 mask 像素。
+- `PolypResult.boxes` 的座標同樣是 **ROI 像素**，與 mask 共用同一個座標系。
 - gateway 內部無論模型輸入被 resize 成幾乘幾，回傳前一律回到 ROI 尺寸
 
 前端要把 mask 疊到 `<video>` 上時，只需要做一次幾何換算：
@@ -115,7 +120,7 @@ interface SessionManifest {
   sampling: {
     extract_fps: number         // 抽幀取樣率，預設 15
     gns_fps: number             // GNS 取樣率，預設 15
-    gim_fps: number             // GIM 取樣率，預設 5（且只跑 NBI 幀）
+    gim_fps: number             // GIM 取樣率，預設 5（且只跑胃部 NBI 幀）
   }
 
   // 幀表在 ffmpeg 開跑前就依 duration × extract_fps 建好（隨選推論才有位置可寫），
@@ -155,13 +160,25 @@ interface GimResult {
   mask_url: string | null       // score === 0 時為 null
 }
 
+interface PolypBox {
+  x1: number; y1: number; x2: number; y2: number   // ROI 像素
+  confidence: number            // 0..1
+}
+
+interface PolypResult {
+  boxes: PolypBox[]             // 偵測器的框；沒偵測到時為空陣列
+  area: number                  // mask 覆蓋 ROI 的百分比 0..100
+  mask_url: string | null       // boxes 為空時為 null
+}
+
 interface FrameRecord {
   index: number                 // 從 0 起算的抽幀序號
   t: number                     // 影片時間（秒）★ 對齊 <video>.currentTime 的唯一依據
   image_url: string             // ROI 裁切後的 JPEG
 
   gns: GnsResult | null         // 尚未掃到 / 該幀未取樣時為 null
-  gim: GimResult | null         // 同上；WL 幀永遠為 null（GIM 只在 NBI 上有效）
+  gim: GimResult | null         // 同上；GIM 不適用的幀永遠為 null（見 §4.2）
+  polyp: PolypResult | null     // 沒人要過就永遠是 null（見 §4.3）
 }
 ```
 
@@ -210,6 +227,80 @@ GNS 原始 16 類：
 此表定義於 `backend/protocol.py` 的 `REGION_MAP`，是**單一事實來源**，
 前端不得自行硬寫另一份。若之後對應有修正，改該處即可。
 
+### 4.1 顯示用的部位平滑（不影響 wire format）
+
+逐幀的 GNS 標籤抖動遠大於實際的檢查流程：video1.mp4 上原始標籤跳了 692 次，
+標註的實際部位轉換只有 23 次，中位數的連續段只有 0.2 秒。
+因此**畫面上顯示的部位不是逐幀取 argmax**，而是
+`frontend/src/protocol/lookup.ts` 的 `buildRegionTrack(frames)`：
+以 3 秒滑動視窗、用 `gns.confidence` 加權投票，挑戰者要連續領先 0.4 秒
+且平均信心差 ≥ 0.05 才換手（常數以 video1.mp4 的標註擬合，692 次 → 45 次，
+與標註的一致率 72% → 75%，換手中位延遲 1.1 秒）。
+
+同一份 track 也提供 `watchedSeconds(track, t)`：各部位在 `t` 之前已播過的秒數。
+覆蓋清單的標準是**固定秒數** `SEEN_SECONDS`，超過才標 seen（畫面不顯示百分比）：
+
+| region | 秒 | region | 秒 |
+|--------|----|--------|----|
+| esophagus | 205 | angle | 52 |
+| cardia | 51 | antrum | 98 |
+| body | 217 | duodenum | 31 |
+
+這組標準是把 video1.mp4 全部 50,455 幀跑完 GNS、經上述平滑後量到的各部位停留時間
+（食道 256.0s、賁門 63.2s、胃體 271.5s、胃角 65.4s、胃竇 122.8s、十二指腸 38.9s）
+取八成。因為是固定值而非「佔本片的比例」，掃描還沒跑完也能用，
+碰到跳過某部位的影片也不會自動達標。`unknown` 永遠不算 seen。
+
+這一層純屬顯示，`FrameRecord` 與所有 API 皆未改變；
+第二頁若也要顯示部位，直接用同一組函式即可，不要另寫一份平滑。
+
+### 4.2 GIM 的適用範圍
+
+GIM 是在**胃部黏膜的 NBI 影像**上訓練的。食道與十二指腸不在它的定義域內
+（在那裡輸出 mask，等於對一個沒問過的問題給出很有把握的答案），所以：
+
+```
+gim 可跑  ⇔  modality == 'NBI'  且  region ∈ { cardia, body, angle, antrum }
+```
+
+定義於 `protocol/types.ts` 的 `GIM_REGIONS` / `gimApplies()`。
+**這是第一頁的規則，比 gateway 嚴格**：gateway 自己只看 NBI，背景掃描仍會對食道與
+十二指腸的 NBI 幀跑 GIM，`FrameRecord.gim` 在那些幀上也可能有值。第一頁兩件事都照
+這條規則走——不向 `/analyze` 要那些幀的 mask，也不顯示既有的：IM overlay 按鈕停用、
+不疊圖。第二頁若要顯示 mask，請自行套同一條規則。
+
+存下來的 mask PNG 仍是模型原本的填色輸出；第一頁在瀏覽器端用 SVG filter
+（`ScopeStage.tsx` 的 `MaskBoundaryFilter`）把它畫成**只有邊框的輪廓**，
+中間不上色——病灶內部的 pit pattern 正是判讀的依據，蓋掉就沒得看了。
+同一個 filter 也用在息肉 mask 上，兩者外觀一致，只有顏色不同。
+
+### 4.3 息肉（POLYP）的適用範圍與觸發方式
+
+這是兩個模型串起來的一條管線：
+
+```
+偵測器 (YOLO, fine-tune 於浙江大學胃鏡資料集)  →  bounding box
+                                                   ↓
+MedSAM (vit_b, box prompt)                     →  mask
+```
+
+偵測器只在**白光的胃部影像**上訓練過，所以：
+
+```
+polyp 可跑  ⇔  modality == 'WL'  且  region ∈ { cardia, body, angle, antrum }
+```
+
+定義於 `protocol/types.ts` 的 `POLYP_REGIONS` / `polypApplies()`，
+gateway 端的鏡像在 `backend/protocol.py` 的 `POLYP_REGIONS`。
+**與 GIM 不同的是，這條規則 gateway 自己也會強制執行**：不適用的幀即使
+`polyp: true` 也一律回傳 `polyp: null`，不會浪費 GPU。
+
+**它不在背景掃描裡。** GNS 與 GIM 是全片跑完寫進 session 的，息肉不是：
+一幀約 90–120 ms（MedSAM 的 ViT-B encoder 是主要成本），全片五萬幀跑不動。
+所以 `FrameRecord.polyp` 的預設值永遠是 `null`，**只有在有人明確
+用 `POST /analyze` 帶 `polyp: true` 要過之後才會有值**。要過的結果一樣會寫回
+session、一樣會用 `frames` 事件廣播，所以兩個頁面看到的是同一份東西。
+
 ---
 
 ## 5. HTTP API
@@ -235,6 +326,15 @@ Base URL 預設 `http://127.0.0.1:8080`。
 ### `GET /api/sessions/{id}`
 回傳單一 `SessionManifest`。輪詢進度用；但建議改用 SSE。
 
+### `DELETE /api/sessions/{id}`
+刪除 session：記憶體裡的紀錄與磁碟上的整個資料夾（frames 是大宗，
+14 分鐘 60fps 約 4 GB）。回傳 `{ "deleted": "<id>" }`。
+
+- **不可復原**，第一頁的按鈕會先要求確認一次。
+- 還在處理中的 session 會**先被停下來**：pipeline task 取消、ffmpeg kill，
+  否則兩者都還會繼續往資料夾裡寫（`Session.save()` 會把它重建出來），
+  留下一個半殘的 session。
+
 ### `GET /api/sessions/{id}/frames`
 查詢參數：`from_t`、`to_t`（秒，皆可省略）、`only_scanned`（布林，預設 false）。
 
@@ -250,18 +350,27 @@ Base URL 預設 `http://127.0.0.1:8080`。
 
 ```jsonc
 // request
-{ "t": 692.75 }
+{ "t": 692.75, "polyp": false }   // polyp 可省略，預設 false
 // response：一筆 FrameRecord
 ```
 
 用途是第一頁的即時判讀：影片播到或跳到掃描還沒覆蓋的位置時，就地推一幀。
 
-- **冪等**。該幀若已被掃描或先前的隨選推論算過，直接回傳既有結果，不會重算。
+- **補齊該幀缺的東西**：GNS、GIM，或兩者。背景掃描是 GNS 全片跑完才開始跑 GIM，
+  所以一個 session 大部分時間裡，playhead 底下的幀有部位卻還沒有 mask；
+  這支 API 是 GIM pass 到達之前唯一能把 mask 疊上畫面的路徑。
+- **`polyp: true` 才會跑息肉管線**（偵測 + MedSAM，見 §4.3）。省略或 `false`
+  時 `FrameRecord.polyp` 一定是 `null`——沒有任何背景流程會去填它。
+  不適用的幀（NBI、食道、十二指腸）即使要了也回 `null`。
+- **冪等**。該幀若已算齊（WL 幀有 GNS 即算齊，GIM 只在 NBI 上跑），
+  直接回傳既有結果，不會重算。息肉同理：算過一次就存著，再要也不重算。
 - 結果會**寫回 session**，所以背景掃描之後會跳過它，第二頁拿到的與第一頁顯示的完全一致。
 - 同時也會用 `frames` 事件廣播出去。
 - 該幀若還沒被抽出來，gateway 會用 ffmpeg 單幀 seek 補（約 200ms，與時間點深淺無關）；
   已抽出來的話就只是讀檔，整體約 25–30ms。
+  **帶 `polyp: true` 時**：偵測不到東西約 +15ms，偵測到而要跑 MedSAM 約 **90–120ms**。
 - 伺服器端一次只跑一個隨選推論。呼叫端應自行做 single-flight，不要塞滿佇列。
+  息肉要整段掃的話請自行節流，不要用 30Hz 去打。
 
 ### `GET /api/sessions/{id}/events`
 SSE，見 §3.3。連線建立時會先補送一次當下的 `status` 與 `progress`。
@@ -325,11 +434,70 @@ subscribeSession(sessionId, (ev) => {
 5. 第一頁保證：一旦 `ready`，`frames` 內每一筆的 `gns` 皆非 null
    （`gim` 仍可能為 null——WL 幀本來就沒有）。
 
+### 6.1 要息肉結果的話：調用方法
+
+`ready` 之後 `frames` 裡的 `polyp` **全部都是 `null`**，這是預期行為，不是漏算
+（§4.3）。第二頁要用的話，自己挑時間點去要，第一頁不會替你要。
+
+```ts
+import { analyzeFrame, polypApplies, frameAt, getFrames } from '@/protocol'
+
+const frames = await getFrames(sessionId)
+
+// 1. 先用 polypApplies 篩掉跑不了的幀，別把不適用的時間點丟進去——
+//    gateway 會回 null，只是白跑一趟。
+const candidates = frames.filter((f) => polypApplies(f.gns))
+
+// 2. 自己決定要看哪些時間點。整片每幀都要是不切實際的：
+//    一幀 90–120ms，五萬幀等於一個半小時。下面是每 2 秒取一幀的例子。
+const STEP_S = 2
+const wanted: number[] = []
+for (const f of candidates) {
+  if (wanted.length === 0 || f.t - wanted[wanted.length - 1] >= STEP_S) {
+    wanted.push(f.t)
+  }
+}
+
+// 3. 串列送，不要並發。伺服器端一次只跑一個隨選推論，塞爆佇列只會讓
+//    第一頁的即時判讀跟著卡住。
+const found = []
+for (const t of wanted) {
+  const frame = await analyzeFrame(sessionId, t, { polyp: true })
+  if (frame.polyp?.boxes.length) found.push(frame)
+}
+```
+
+拿到的 `frame.polyp` 就是 §3.2 的 `PolypResult`：
+
+- `boxes` — 偵測框，**ROI 像素座標**，跟 `image_url` 的 JPEG 同一個座標系，
+  可以直接畫在上面。
+- `mask_url` — RGBA PNG，ROI 尺寸，已經上好黃色。想跟第一頁一樣做成描邊的話，
+  照抄 `ScopeStage.tsx` 的 `MaskBoundaryFilter`（那是一個純 SVG filter，
+  沒有相依，複製過去即可——**不要 import**，§6 第 1 條）。
+- `area` — mask 佔 ROI 的百分比。
+
+要點：
+
+- 結果會寫回 session，所以**要過一次之後就一直在**，重整頁面、換人看都還在，
+  也會出現在後續的 `getFrames()` 裡。不必自己做快取。
+- 同一個時間點要第二次不會重算，直接回既有結果。
+- 沒偵測到時 `polyp` 是 `{ boxes: [], area: 0, mask_url: null }`，
+  **不是 `null`**——`null` 代表「沒人問過」，空陣列代表「問過了，沒有」。
+  這兩者要分開處理，否則會一直重複去要同一批空幀。
+
 ---
 
 ## 7. 已知限制
 
 - GNS 全片區域準確率約 80%（video1）/ 60%（video2），插入段、十二指腸、
   賁門最弱。這是模型上限。
-- GIM 只在 NBI 影像上訓練，白光幀的輸出無意義，因此被硬性關閉。
+- GIM 只在**胃部**的 NBI 影像上訓練；白光、食道、十二指腸的輸出無意義，因此被硬性關閉（§4.2）。
 - `G1–G6` 的解剖對應是經驗推得，非論文記載。
+- 息肉偵測器是**自己訓練的**，不是現成權重：上游專案（kojix2/Gastric-polyps-detection）
+  只附標註不附模型，它 README 給的預訓練 ONNX 連結已失效。目前這顆是拿它的
+  404 張標註影像（另有 354 張上下翻轉的擴增）fine-tune 出來的，
+  在 81 張未見過的影像上 mAP50 0.785 / mAP50-95 0.433。
+  資料集來自浙江大學的另一台胃鏡主機，與本專案的 GIF-H290 影像條件不同，
+  **誤報率會比上面那個數字給人的印象高**，這是它最主要的限制。
+- MedSAM 是**通用**醫學影像分割模型，沒有針對胃息肉微調過。它只負責把框變成輪廓，
+  框錯了它會很有信心地把錯的東西描出來——輪廓的品質不能反過來當作偵測正確的證據。

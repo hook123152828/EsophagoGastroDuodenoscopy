@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PORTS="${PORTS:-8000 8001 8002 8080}"
+PORTS="${PORTS:-8000 8001 8002 8003 8080}"
 stopped=0
 
 for pidfile in logs/*.pid; do

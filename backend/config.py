@@ -1,8 +1,13 @@
 """Runtime configuration.
 
-The three model projects (GNS / GIM / CGI) are *external read-only dependencies*
-— they are not part of this repository and are never modified.  Their locations
-are injected here so the servers can put them on ``sys.path`` and load weights.
+The model projects (GNS / GIM / CGI / Polyp / MedSAM) are *external read-only
+dependencies* — they are not part of this repository and are never modified.
+Their locations are injected here so the servers can put them on ``sys.path``
+and load weights.
+
+Polyp is the one exception to "never modified": it ships annotations but no
+usable weights, so ``scripts/train_polyp.py`` writes a fine-tuned detector into
+``Polyp/weights/``.  The upstream files themselves are still left alone.
 
 Every value can be overridden with an environment variable of the same name.
 """
@@ -24,6 +29,8 @@ def _path(name: str, default: Path) -> Path:
 GNS_ROOT = _path("GNS_ROOT", REPO_ROOT / "GNS")
 GIM_ROOT = _path("GIM_ROOT", REPO_ROOT / "GIM")
 CGI_ROOT = _path("CGI_ROOT", REPO_ROOT / "CGI")
+POLYP_ROOT = _path("POLYP_ROOT", REPO_ROOT / "Polyp")
+MEDSAM_ROOT = _path("MEDSAM_ROOT", REPO_ROOT / "MedSAM")
 
 GNS_WEIGHT = _path("GNS_WEIGHT", GNS_ROOT / "weights" / "best_94.0050_AIGNS.pth")
 GIM_CONFIG = _path(
@@ -33,6 +40,11 @@ GIM_CONFIG = _path(
 GIM_WEIGHT = _path("GIM_WEIGHT", GIM_ROOT / "model" / "epoch_50_bd.pth")
 CGI_WEIGHT = _path(
     "CGI_WEIGHT", CGI_ROOT / "weight" / "Paper_95.74_93.75_96.15_98.36.pth"
+)
+# Produced by scripts/train_polyp.py, not shipped by the upstream project.
+POLYP_WEIGHT = _path("POLYP_WEIGHT", POLYP_ROOT / "weights" / "polyp_yolo.pt")
+MEDSAM_WEIGHT = _path(
+    "MEDSAM_WEIGHT", MEDSAM_ROOT / "work_dir" / "MedSAM" / "medsam_vit_b.pth"
 )
 
 # --- Data --------------------------------------------------------------------
@@ -44,6 +56,7 @@ GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8080"))
 GNS_URL = os.getenv("GNS_URL", "http://127.0.0.1:8000").rstrip("/")
 GIM_URL = os.getenv("GIM_URL", "http://127.0.0.1:8001").rstrip("/")
 CGI_URL = os.getenv("CGI_URL", "http://127.0.0.1:8002").rstrip("/")
+POLYP_URL = os.getenv("POLYP_URL", "http://127.0.0.1:8003").rstrip("/")
 
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
@@ -86,3 +99,8 @@ def missing_binaries() -> List[str]:
 # Batch size for GNS; the model runs at ~500 fps on an RTX 4090 so this is
 # bounded by JPEG decoding rather than by the GPU.
 GNS_BATCH = int(os.getenv("GNS_BATCH", "32"))
+
+# Detector confidence floor.  The detector was fine-tuned on a different scope
+# and console than the procedure videos, so it is run deliberately shy: a box
+# that survives this is worth a MedSAM pass, and MedSAM is the expensive half.
+POLYP_CONF = float(os.getenv("POLYP_CONF", "0.35"))

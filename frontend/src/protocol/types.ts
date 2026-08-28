@@ -82,6 +82,30 @@ export interface GimResult {
   mask_url: string | null
 }
 
+export interface PolypBox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  confidence: number
+}
+
+/**
+ * Gastric polyps: the detector's boxes, and MedSAM's mask for them.
+ *
+ * The detector proposes boxes, each box prompts MedSAM, and the masks are
+ * composited into one RGBA PNG — the same shape of result as `GimResult`, so
+ * it draws the same way.
+ */
+export interface PolypResult {
+  /** In ROI pixels, like everything else. Empty when nothing was found. */
+  boxes: PolypBox[]
+  /** Percentage of the ROI the masks cover, 0..100. */
+  area: number
+  /** RGBA PNG at ROI resolution, already tinted. Null when nothing was found. */
+  mask_url: string | null
+}
+
 export interface FrameRecord {
   index: number
   /** Video time in seconds — the only key for aligning with <video>. */
@@ -90,6 +114,11 @@ export interface FrameRecord {
   gns: GnsResult | null
   /** Always null on white-light frames: GIM is trained on NBI only. */
   gim: GimResult | null
+  /**
+   * Null unless someone asked for it — the polyp pass is never part of the
+   * background scan. Request it with `analyzeFrame(id, t, { polyp: true })`.
+   */
+  polyp: PolypResult | null
 }
 
 export type SessionEvent =
@@ -121,6 +150,35 @@ export const REGION_ORDER: RegionId[] = [
   'antrum',
   'duodenum',
 ]
+
+/**
+ * Regions GIM is valid on — gastric mucosa only.
+ *
+ * The model is trained on stomach under NBI; the oesophagus and the duodenum
+ * are outside its domain. The gateway's own rule is NBI alone, so a frame
+ * there may still carry a `gim` result from the background scan — page 1 does
+ * not ask for one and does not show one.
+ */
+export const GIM_REGIONS: RegionId[] = ['cardia', 'body', 'angle', 'antrum']
+
+/** Whether GIM is worth running on a frame GNS classified this way. */
+export function gimApplies(gns: GnsResult | null | undefined): boolean {
+  return !!gns && gns.modality === 'NBI' && GIM_REGIONS.includes(gns.region)
+}
+
+/**
+ * Regions the polyp detector is valid on — gastric mucosa under white light.
+ *
+ * The detector was fine-tuned on the Zhejiang University gastroscopy set,
+ * which is white-light stomach throughout. NBI and everything outside the
+ * stomach are off its training distribution, so they are not asked for.
+ */
+export const POLYP_REGIONS: RegionId[] = ['cardia', 'body', 'angle', 'antrum']
+
+/** Whether the polyp pass is worth running on a frame GNS classified this way. */
+export function polypApplies(gns: GnsResult | null | undefined): boolean {
+  return !!gns && gns.modality === 'WL' && POLYP_REGIONS.includes(gns.region)
+}
 
 export const REGION_LABEL: Record<RegionId, string> = {
   esophagus: 'Esophagus',

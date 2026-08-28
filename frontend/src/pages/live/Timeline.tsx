@@ -1,6 +1,12 @@
 import { useMemo } from 'react'
 
-import { regionSpans, type FrameRecord, type RegionId } from '@/protocol'
+import {
+  REGION_WINDOW_S,
+  regionSpans,
+  type FrameRecord,
+  type RegionId,
+  type RegionTrack,
+} from '@/protocol'
 
 const REGION_COLOR: Record<RegionId, string> = {
   esophagus: 'var(--color-region-esophagus)',
@@ -13,28 +19,68 @@ const REGION_COLOR: Record<RegionId, string> = {
 }
 
 interface Props {
+  /** Smoothed site over the procedure — the coloured bands. */
+  track: RegionTrack
+  /** Raw frames, still the only place the IM findings live. */
   frames: FrameRecord[]
-  duration: number
   currentTime: number
   onSeek: (time: number) => void
 }
 
 /**
+ * How far the scan has actually got, in video seconds.
+ *
+ * The frame table is built at full length before ffmpeg even starts — a row
+ * per extracted frame, results filled in later — so its length says nothing
+ * about progress. What has been analysed is the run of frames carrying a GNS
+ * result, which the scan fills in order from the start.
+ *
+ * Read as a contiguous frontier rather than the furthest analysed frame,
+ * because on-demand analysis leaves islands far ahead of the scan: jumping to
+ * the twelfth minute of an untouched procedure analyses that one frame, and
+ * taking the maximum would stretch the axis over eleven minutes of nothing.
+ * The tolerated gap is the site window — a hole smaller than that is the
+ * sampling stride, anything wider is unscanned video.
+ */
+function scannedTo(frames: FrameRecord[]): number {
+  let frontier = 0
+  for (const frame of frames) {
+    if (!frame.gns) continue
+    if (frame.t - frontier > REGION_WINDOW_S) break
+    frontier = frame.t
+  }
+  return frontier
+}
+
+/**
  * The procedure at a glance: which region the scope was in, and where IM was
  * flagged. Click to seek.
+ *
+ * The axis spans what has been scanned, not the whole video: a procedure that
+ * has just been loaded has nothing to show and says so by being empty, rather
+ * than by drawing a full-width bar that is almost entirely a lie. It grows as
+ * results land, which slides everything already on it leftwards.
  */
-export default function Timeline({ frames, duration, currentTime, onSeek }: Props) {
-  const spans = useMemo(() => regionSpans(frames), [frames])
+export default function Timeline({
+  track,
+  frames,
+  currentTime,
+  onSeek,
+}: Props) {
+  const spans = useMemo(() => regionSpans(track), [track])
   const findings = useMemo(
     () => frames.filter((frame) => frame.gim && frame.gim.score >= 1),
     [frames],
   )
+  const extent = useMemo(() => scannedTo(frames), [frames])
 
-  const percent = (time: number) => `${(time / Math.max(duration, 1)) * 100}%`
+  const percent = (time: number) =>
+    `${Math.min(100, (time / Math.max(extent, 1)) * 100)}%`
 
   function seekFromEvent(event: React.MouseEvent<HTMLDivElement>) {
+    if (extent === 0) return
     const bounds = event.currentTarget.getBoundingClientRect()
-    onSeek(((event.clientX - bounds.left) / bounds.width) * duration)
+    onSeek(((event.clientX - bounds.left) / bounds.width) * extent)
   }
 
   return (
@@ -78,7 +124,11 @@ export default function Timeline({ frames, duration, currentTime, onSeek }: Prop
           {findings.length > 0 && (
             <span className="mr-3 text-im">{findings.length} IM findings</span>
           )}
-          {formatTime(duration)}
+          {/* How far the scan has reached, not how long the video is: the
+              length is not known to be interesting until it has been looked
+              at, and showing it would imply the empty bar means "nothing
+              found" rather than "nothing analysed". */}
+          {extent > 0 && formatTime(extent)}
         </span>
       </div>
     </div>

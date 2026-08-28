@@ -13,8 +13,16 @@ import type {
   VideoFile,
 } from './types'
 
-export const GATEWAY_URL =
-  import.meta.env.VITE_GATEWAY_URL ?? 'http://127.0.0.1:8080'
+/**
+ * Base for every gateway call — empty by default, i.e. same origin.
+ *
+ * The dev server proxies `/api`, `/files` and `/media` through to the gateway,
+ * so the page works unchanged whether it is opened at localhost, over a LAN
+ * address or through a tunnel. Set `VITE_GATEWAY_URL` only to point a build at
+ * a gateway somewhere else, and add that origin to the backend's
+ * `FRONTEND_ORIGINS` when you do.
+ */
+export const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? ''
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${GATEWAY_URL}${path}`, {
@@ -84,6 +92,16 @@ export function getSession(sessionId: string): Promise<SessionManifest> {
   return request(`/api/sessions/${sessionId}`)
 }
 
+/**
+ * Delete a session and everything it wrote to disk.
+ *
+ * Irreversible, and it takes the extracted frames with it — several GB for a
+ * full procedure. A session that is still scanning is stopped first.
+ */
+export function deleteSession(sessionId: string): Promise<{ deleted: string }> {
+  return request(`/api/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
 export function createSession(
   videoPath: string,
   sampling?: Partial<Sampling>,
@@ -134,11 +152,20 @@ export function subscribeSession(
  *
  * Cheap and idempotent: an already-analysed frame is returned from the session
  * as-is, and a fresh result is written back so the scan skips it later.
+ *
+ * `polyp` opts into the detection-plus-segmentation pass, which nothing runs in
+ * the background. It is an order of magnitude dearer than the rest of the
+ * frame — a round trip near 200ms rather than 25 — so ask for it only when the
+ * result is about to be shown or recorded.
  */
-export function analyzeFrame(sessionId: string, t: number): Promise<FrameRecord> {
+export function analyzeFrame(
+  sessionId: string,
+  t: number,
+  options: { polyp?: boolean } = {},
+): Promise<FrameRecord> {
   return request(`/api/sessions/${sessionId}/analyze`, {
     method: 'POST',
-    body: JSON.stringify({ t }),
+    body: JSON.stringify({ t, polyp: options.polyp ?? false }),
   })
 }
 
