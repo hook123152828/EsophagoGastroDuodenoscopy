@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import {
+  buildModalityTrack,
   buildRegionTrack,
   frameAt,
   gimFrameAt,
   polypFrameAt,
   seenRegions,
+  trackModalityAt,
   trackRegionAt,
   GIM_REGIONS,
   POLYP_REGIONS,
@@ -109,6 +111,13 @@ export default function LivePage() {
   const track = useMemo(() => buildRegionTrack(frames), [frames])
   const region = trackRegionAt(track, currentTime)
 
+  // The light is smoothed for the same reason the site is, and it matters for
+  // the same decision: whether a model applies to what is on screen. Read off
+  // the frame it changes 88 times a minute, which blinks the overlay on and
+  // off around a scope that has not gone anywhere.
+  const modalityTrack = useMemo(() => buildModalityTrack(frames), [frames])
+  const modality = trackModalityAt(modalityTrack, currentTime)
+
   // Regions watched for long enough to count as examined, so the map and the
   // checklist report coverage rather than a glimpse.
   const visited = useMemo(() => seenRegions(track, currentTime), [track, currentTime])
@@ -142,12 +151,10 @@ export default function LivePage() {
   // GIM is a gastric NBI model, so the overlay is offered nowhere else. The
   // site comes from the smoothed track rather than the frame, so a single
   // stray classification cannot blink the overlay off mid-examination.
-  const imEligible =
-    frame?.gns?.modality === 'NBI' && GIM_REGIONS.includes(region)
+  const imEligible = modality === 'NBI' && GIM_REGIONS.includes(region)
   // The detector was fine-tuned on white-light stomach, so the overlay is
   // offered there and nowhere else — the mirror of the IM rule.
-  const polypEligible =
-    frame?.gns?.modality === 'WL' && POLYP_REGIONS.includes(region)
+  const polypEligible = modality === 'WL' && POLYP_REGIONS.includes(region)
 
   function togglePlay() {
     const video = videoRef.current
@@ -211,6 +218,7 @@ export default function LivePage() {
                 videoRef={videoRef}
                 frame={frame}
                 region={region}
+                modality={modality}
                 maskFrame={maskFrame}
                 showMask={showMask && imEligible}
                 polypFrame={polypFrame}
@@ -277,7 +285,7 @@ export default function LivePage() {
 
             <p className="text-sm leading-relaxed text-console-muted">
               {!imEligible
-                ? frame?.gns?.modality === 'NBI'
+                ? modality === 'NBI'
                   ? 'IM is assessed on gastric mucosa only'
                   : 'white-light imaging'
                 : maskFrame?.gim?.mask_url

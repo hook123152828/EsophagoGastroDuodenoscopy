@@ -9,6 +9,7 @@ import {
   REGION_LABEL,
   roiCropStyle,
   type FrameRecord,
+  type Modality,
   type RegionId,
   type SessionManifest,
 } from '@/protocol'
@@ -19,6 +20,8 @@ interface Props {
   frame: FrameRecord | null
   /** Stabilised site, so the caption never contradicts the site panel. */
   region: RegionId
+  /** Stabilised light, for the same reason — and it gates both overlays. */
+  modality: Modality | null
   maskFrame: FrameRecord | null
   showMask: boolean
   polypFrame: FrameRecord | null
@@ -39,6 +42,7 @@ export default function ScopeStage({
   videoRef,
   frame,
   region,
+  modality,
   maskFrame,
   showMask,
   polypFrame,
@@ -91,7 +95,6 @@ export default function ScopeStage({
     }
   }, [videoRef, manifest.roi, box])
 
-  const modality = frame?.gns?.modality ?? null
   const gim = maskFrame?.gim ?? null
   const polyp = showPolyp ? (polypFrame?.polyp ?? null) : null
   const maskVisible = showMask && Boolean(maskFrame?.gim?.mask_url)
