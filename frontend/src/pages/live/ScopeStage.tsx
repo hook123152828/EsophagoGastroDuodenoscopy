@@ -1,6 +1,10 @@
 import { useEffect, useState, type RefObject } from 'react'
 
 import {
+  MASK_BOUNDARY_FILTER,
+  MaskBoundaryFilter,
+} from '@/components/MaskBoundaryFilter'
+import {
   fileUrl,
   REGION_LABEL,
   roiCropStyle,
@@ -119,7 +123,7 @@ export default function ScopeStage({
           <img
             src={fileUrl(maskFrame!.gim!.mask_url!)}
             alt=""
-            style={{ filter: `url(#${MASK_BOUNDARY_ID})` }}
+            style={{ filter: MASK_BOUNDARY_FILTER }}
             className="pointer-events-none absolute inset-0 h-full w-full"
           />
         )}
@@ -130,7 +134,7 @@ export default function ScopeStage({
           <img
             src={fileUrl(polyp!.mask_url!)}
             alt=""
-            style={{ filter: `url(#${MASK_BOUNDARY_ID})` }}
+            style={{ filter: MASK_BOUNDARY_FILTER }}
             className="pointer-events-none absolute inset-0 h-full w-full"
           />
         )}
@@ -202,58 +206,6 @@ function CornerBrackets() {
           fill="none"
         />
       ))}
-    </svg>
-  )
-}
-
-const MASK_BOUNDARY_ID = 'mask-boundary'
-
-/**
- * Turns a filled mask into the outline of what the model found.
- *
- * Both GIM and the polyp service return a filled, tinted region. Filled, it
- * covers the very mucosa the endoscopist is reading — the pit pattern inside
- * the lesion is what the call is made on — so it is drawn as a boundary
- * instead. The filter works on alpha alone, so each mask keeps its own tint.
- *
- * Three things happen, in this order:
- *
- * 1. The alpha is flattened. The tint arrives at just under 50% opacity, and
- *    compositing against a half-transparent shape leaves half the interior
- *    behind rather than clearing it, which reads as a fill with a brighter rim.
- * 2. A closing then an opening. Segmentation of mucosa comes back speckled —
- *    on a typical antrum frame, 106 pieces and 232 holes — and outlining that
- *    directly draws a cloud of rings over the middle of the lesion instead of
- *    the lesion. Growing then shrinking closes the holes and joins pieces that
- *    are all but touching; shrinking then growing drops what is left over,
- *    which is single-pixel noise rather than a finding.
- * 3. The outline itself: erode, and keep only what the erosion removed.
- *
- * Radii are in CSS pixels of the stage, so the shapes stay the same weight on
- * screen whatever size the video is drawn at. Done here rather than in the GIM
- * service so what is stored stays the model's own output, and the drawing
- * stays this page's decision.
- */
-function MaskBoundaryFilter() {
-  return (
-    <svg aria-hidden className="pointer-events-none absolute h-0 w-0">
-      <filter
-        id={MASK_BOUNDARY_ID}
-        x="-8%"
-        y="-8%"
-        width="116%"
-        height="116%"
-        colorInterpolationFilters="sRGB"
-      >
-        <feComponentTransfer result="solid">
-          <feFuncA type="linear" slope="255" />
-        </feComponentTransfer>
-        <feMorphology in="solid" operator="dilate" radius="5" result="grown" />
-        <feMorphology in="grown" operator="erode" radius="7" result="shrunk" />
-        <feMorphology in="shrunk" operator="dilate" radius="2" result="merged" />
-        <feMorphology in="merged" operator="erode" radius="4" result="inner" />
-        <feComposite in="merged" in2="inner" operator="out" />
-      </filter>
     </svg>
   )
 }

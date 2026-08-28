@@ -23,11 +23,7 @@ video1.mp4 (1920×1080, 60fps)
 │ gateway  :8080                               │
 │  1. ffmpeg 依固定 ROI 裁切抽幀 (extract_fps)  │
 │  2. 全片跑 GNS        (gns_fps)              │
-<<<<<<< HEAD
-│  3. 只對非食道 NBI 幀跑 GIM (gim_fps)        │
-=======
 │  3. 只對「胃部 NBI」幀跑 GIM (gim_fps)        │
->>>>>>> origin/polyp-segmentation
 │  4. status → ready                           │
 │                                              │
 │  以上每算完一批就用 frames 事件推出去；        │
@@ -66,18 +62,11 @@ ROI = { x: 799, y: 105, width: 1000, height: 871 }
 
 - `image_url` 指向的 JPEG 尺寸 = `ROI.width × ROI.height`
 - `mask_url` 指向的 PNG 尺寸 = `ROI.width × ROI.height`，**RGBA**：
-<<<<<<< HEAD
-  背景為完全透明，IM 像素已上色（紫，alpha 130）。
-  live 頁可直接用 `<img>` 疊上去；report 頁會讀取 alpha channel 並只畫病灶
-  boundary，兩者都不會改變原始 mask 或面積數值。
-  需要數值的話用 `GimResult.score` / `GimResult.area`，不要去讀 mask 像素。
-=======
   背景為完全透明，命中的像素已上色（IM 紫 `#a855f7`、息肉黃 `#facc15`，
   兩者 alpha 皆 130）。前端直接用 `<img>` 疊上去即可，不需要做任何像素運算。
   需要數值的話用 `GimResult.score` / `GimResult.area` /
   `PolypResult.boxes` / `PolypResult.area`，不要去讀 mask 像素。
 - `PolypResult.boxes` 的座標同樣是 **ROI 像素**，與 mask 共用同一個座標系。
->>>>>>> origin/polyp-segmentation
 - gateway 內部無論模型輸入被 resize 成幾乘幾，回傳前一律回到 ROI 尺寸
 
 前端要把 mask 疊到 `<video>` 上時，只需要做一次幾何換算：

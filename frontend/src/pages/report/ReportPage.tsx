@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import {
+  MASK_BOUNDARY_FILTER,
+  MaskBoundaryFilter,
+} from '@/components/MaskBoundaryFilter'
+import {
   fileUrl,
   getFrames,
   getSession,
@@ -379,6 +383,7 @@ function GimSection({
   return (
     <>
       <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <MaskBoundaryFilter />
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold tracking-widest text-purple-600 uppercase">
@@ -453,6 +458,7 @@ function GimEvidenceCard({
           <img
             src={fileUrl(frame.gim.mask_url)}
             alt=""
+            style={{ filter: MASK_BOUNDARY_FILTER }}
             className="pointer-events-none absolute inset-0 h-full w-full object-cover"
             loading="lazy"
           />
@@ -518,6 +524,7 @@ function GimImageDialog({
           <img
             src={fileUrl(frame.gim.mask_url)}
             alt=""
+            style={{ filter: MASK_BOUNDARY_FILTER }}
             className="pointer-events-none absolute inset-0 h-full w-full object-contain"
           />
         )}
