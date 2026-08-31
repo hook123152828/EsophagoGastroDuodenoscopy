@@ -90,9 +90,20 @@ def health() -> dict:
 
 
 def _detect(image: np.ndarray) -> np.ndarray:
-    """Boxes above the confidence floor, as (N, 5) of x1 y1 x2 y2 conf."""
+    """Boxes above the confidence floor, as (N, 5) of x1 y1 x2 y2 conf.
+
+    Handed BGR, not the RGB everything else here works in: given an array
+    rather than a path, Ultralytics assumes the channel order OpenCV loads in,
+    and silently detects on a colour-swapped image if it is given anything
+    else. On the held-out set that cost three quarters of the detections — 36
+    boxes over 40 frames became 8 — with nothing to show that anything was
+    wrong. MedSAM keeps the RGB array; only the detector sees this one.
+    """
     result = DETECTOR.predict(
-        image, conf=config.POLYP_CONF, verbose=False, device=DEVICE
+        np.ascontiguousarray(image[:, :, ::-1]),
+        conf=config.POLYP_CONF,
+        verbose=False,
+        device=DEVICE,
     )[0]
     if not len(result.boxes):
         return np.zeros((0, 5), dtype=np.float32)
