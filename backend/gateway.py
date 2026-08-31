@@ -233,6 +233,15 @@ def _stride(sampling_fps: float, extract_fps: float) -> int:
     return max(1, round(extract_fps / max(sampling_fps, 1e-6)))
 
 
+def is_gim_candidate(frame: FrameRecord) -> bool:
+    """Return whether a frame is anatomically and optically valid for GIM."""
+    return (
+        frame.gns is not None
+        and frame.gns.modality == "NBI"
+        and frame.gns.region != "esophagus"
+    )
+
+
 async def _windowed(make_task, count: int, width: int):
     """Run ``count`` tasks with ``width`` in flight, yielding results in order.
 
@@ -347,8 +356,7 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
                     frame.gns = inherited
                 if (
                     frontier % gim_stride == 0
-                    and frame.gns is not None
-                    and frame.gns.modality == "NBI"
+                    and is_gim_candidate(frame)
                     and frame.gim is None
                 ):
                     ready.append(frame)
@@ -363,7 +371,7 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
         await queue.put(None)
 
     async def segment() -> None:
-        """GIM is NBI-only — white-light frames never reach this queue."""
+        """Only frames is_gim_candidate accepts ever reach this queue."""
         batch_size = 8
         while True:
             ready = await queue.get()
