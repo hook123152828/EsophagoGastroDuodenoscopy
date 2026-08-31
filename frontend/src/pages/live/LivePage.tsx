@@ -15,6 +15,7 @@ import {
 } from '@/protocol'
 
 import { LayoutBlock, LayoutCanvas, useLayoutEditor } from './LayoutCanvas'
+import RegionChecklist from './RegionChecklist'
 import ScopeStage from './ScopeStage'
 import SessionPicker from './SessionPicker'
 import SidePanel from './SidePanel'
@@ -322,6 +323,8 @@ export default function LivePage() {
                     ? 'no IM finding at this timestamp'
                     : 'IM scan has not reached this frame'}
             </p>
+
+            <RegionChecklist region={region} visited={visited} />
 
             {showPolyp && polypEligible && (
               <p className="text-sm leading-relaxed text-console-muted">
