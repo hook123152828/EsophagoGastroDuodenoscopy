@@ -6,22 +6,14 @@ import {
 } from '@/components/MaskBoundaryFilter'
 import {
   fileUrl,
-  REGION_LABEL,
   roiCropStyle,
   type FrameRecord,
-  type Modality,
-  type RegionId,
   type SessionManifest,
 } from '@/protocol'
 
 interface Props {
   manifest: SessionManifest
   videoRef: RefObject<HTMLVideoElement | null>
-  frame: FrameRecord | null
-  /** Stabilised site, so the caption never contradicts the site panel. */
-  region: RegionId
-  /** Stabilised light, for the same reason — and it gates both overlays. */
-  modality: Modality | null
   maskFrame: FrameRecord | null
   showMask: boolean
   polypFrame: FrameRecord | null
@@ -36,13 +28,16 @@ interface Props {
  * offset until only the endoscope field remains. That makes overlay alignment
  * exact by construction — the container *is* the ROI, so a mask (which is
  * rendered at ROI resolution) simply fills it.
+ *
+ * Nothing is written over the picture. Every readout the stage used to carry —
+ * the light, the site, the scores — is in the controls column instead, where
+ * it can be read without competing with the mucosa for the same pixels. What
+ * stays is what only the stage can say: an outline around a finding, and a
+ * border and brackets marking that there is one.
  */
 export default function ScopeStage({
   manifest,
   videoRef,
-  frame,
-  region,
-  modality,
   maskFrame,
   showMask,
   polypFrame,
@@ -144,38 +139,6 @@ export default function ScopeStage({
 
         {alerting && <CornerBrackets />}
 
-        <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-3">
-          <div className="flex items-start justify-between">
-            <Badge active={showMask}>CAD</Badge>
-            {modality && <Badge active={modality === 'NBI'}>{modality}</Badge>}
-          </div>
-
-          <div className="flex items-end justify-between gap-2">
-            <span className="rounded bg-black/60 px-3 py-1.5 text-base font-medium text-console-text backdrop-blur-sm">
-              {REGION_LABEL[region]}
-              {frame?.gns && (
-                <span className="ml-2 text-sm text-console-muted">
-                  {frame.gns.class_name} · {(frame.gns.confidence * 100).toFixed(0)}%
-                </span>
-              )}
-            </span>
-            <span className="flex flex-col items-end gap-1.5">
-              {polyp !== null && polyp.boxes.length > 0 && (
-                <span className="rounded bg-black/60 px-3 py-1.5 text-sm text-polyp backdrop-blur-sm">
-                  {polyp.boxes.length === 1
-                    ? '1 polyp'
-                    : `${polyp.boxes.length} polyps`}{' '}
-                  · {polyp.area.toFixed(1)}%
-                </span>
-              )}
-              {gim && showMask && (
-                <span className="rounded bg-black/60 px-3 py-1.5 text-sm text-console-text backdrop-blur-sm">
-                  IM score {gim.score} · {gim.area.toFixed(1)}%
-                </span>
-              )}
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   )
@@ -210,19 +173,5 @@ function CornerBrackets() {
         />
       ))}
     </svg>
-  )
-}
-
-function Badge({ children, active }: { children: string; active: boolean }) {
-  return (
-    <span
-      className={`rounded border px-2 py-0.5 text-[11px] font-medium tracking-wider backdrop-blur-sm ${
-        active
-          ? 'border-scope-accent bg-scope-accent/15 text-scope-accent'
-          : 'border-console-line bg-black/50 text-console-muted'
-      }`}
-    >
-      {children}
-    </span>
   )
 }

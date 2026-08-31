@@ -196,44 +196,29 @@ export default function LivePage() {
         </div>
       </header>
 
-      {/* Three columns, with the video column split into stage and timeline.
-          minmax(0, …fr) rather than plain fr: a track's content minimum would
-          otherwise push the proportions off. */}
+      {/* Three columns over two rows. The video takes the left column whole,
+          so it is as tall as the window allows; the timeline runs along the
+          bottom of the other two. minmax(0, …fr) rather than plain fr: a
+          track's content minimum would otherwise push the proportions off. */}
       <LayoutCanvas layout={layout}>
       <div
         style={{
           gridTemplateColumns:
-            'minmax(0, 47.5fr) minmax(0, 18.5fr) minmax(0, 34fr)',
+            'minmax(0, 52.6fr) minmax(0, 18.4fr) minmax(0, 29fr)',
+          gridTemplateRows: 'minmax(0, 91.5fr) minmax(0, 8.5fr)',
         }}
         className="grid min-h-0 flex-1"
       >
-        <div
-          style={{ gridTemplateRows: 'minmax(0, 91.5fr) minmax(0, 8.5fr)' }}
-          className="grid min-w-0 gap-3 p-4"
-        >
+        <div style={{ gridArea: '1 / 1 / 3 / 2' }} className="flex min-w-0 p-4">
           <LayoutBlock id="stage" label="Video">
             <div className="flex min-h-0 flex-1 items-center justify-center">
               <ScopeStage
                 manifest={manifest}
                 videoRef={videoRef}
-                frame={frame}
-                region={region}
-                modality={modality}
                 maskFrame={maskFrame}
                 showMask={showMask && imEligible}
                 polypFrame={polypFrame}
                 showPolyp={showPolyp && polypEligible}
-              />
-            </div>
-          </LayoutBlock>
-
-          <LayoutBlock id="timeline" label="Timeline">
-            <div className="flex min-h-0 flex-1 flex-col justify-center">
-              <Timeline
-                track={track}
-                frames={frames}
-                currentTime={currentTime}
-                onSeek={seek}
               />
             </div>
           </LayoutBlock>
@@ -270,6 +255,49 @@ export default function LivePage() {
               tone="polyp"
               onClick={() => setShowPolyp((value) => !value)}
             />
+
+            {/* What the stage used to write over the mucosa. Off the picture it
+                can be read without covering the thing being read. */}
+            <dl className="mt-1 flex flex-col gap-2 border-t border-console-line pt-3 text-sm">
+              <Readout label="Light">
+                <span className={modality === 'NBI' ? 'text-scope-accent' : undefined}>
+                  {modality ?? '—'}
+                </span>
+              </Readout>
+
+              <Readout label="GNS">
+                {frame?.gns ? (
+                  <>
+                    {frame.gns.class_name}
+                    <span className="ml-1.5 text-console-muted">
+                      {(frame.gns.confidence * 100).toFixed(0)}%
+                    </span>
+                  </>
+                ) : (
+                  '—'
+                )}
+              </Readout>
+
+              <Readout label="IM">
+                {showMask && imEligible && maskFrame?.gim ? (
+                  <span className="text-im">
+                    score {maskFrame.gim.score} · {maskFrame.gim.area.toFixed(1)}%
+                  </span>
+                ) : (
+                  <span className="text-console-muted">—</span>
+                )}
+              </Readout>
+
+              <Readout label="Polyp">
+                {showPolyp && polypEligible && polypFrame?.polyp?.boxes.length ? (
+                  <span className="text-polyp">
+                    {polypFrame.polyp.boxes.length} · {polypFrame.polyp.area.toFixed(1)}%
+                  </span>
+                ) : (
+                  <span className="text-console-muted">—</span>
+                )}
+              </Readout>
+            </dl>
 
             {live.active && (
               <span className="flex items-center gap-2 rounded bg-scope-accent/10 px-3 py-2 text-sm text-scope-accent ring-1 ring-scope-accent/40">
@@ -310,9 +338,35 @@ export default function LivePage() {
         <LayoutBlock id="site" label="Site panel">
           <SidePanel region={region} visited={visited} />
         </LayoutBlock>
+
+        <div
+          style={{ gridArea: '2 / 2 / 3 / 4' }}
+          className="flex min-w-0 border-t border-console-line px-4"
+        >
+          <LayoutBlock id="timeline" label="Timeline">
+            <div className="flex min-h-0 flex-1 flex-col justify-center">
+              <Timeline
+                track={track}
+                frames={frames}
+                currentTime={currentTime}
+                onSeek={seek}
+              />
+            </div>
+          </LayoutBlock>
+        </div>
       </div>
       </LayoutCanvas>
     </main>
+  )
+}
+
+/** One line of the frame readout: what it is on the left, what it says on the right. */
+function Readout({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="text-console-muted">{label}</dt>
+      <dd className="truncate text-right">{children}</dd>
+    </div>
   )
 }
 
@@ -362,8 +416,8 @@ function OverlayButton({
  * current production layout, so dragging starts from what is on screen.
  */
 const DEFAULT_LAYOUT = {
-  stage: { x: 0, y: 0, w: 47.5, h: 91.5 },
-  timeline: { x: 0, y: 91.5, w: 47.5, h: 8.5 },
-  controls: { x: 47.5, y: 0, w: 18.5, h: 100 },
-  site: { x: 66, y: 0, w: 34, h: 100 },
+  stage: { x: 0, y: 0, w: 52.6, h: 100 },
+  controls: { x: 52.6, y: 0, w: 18.4, h: 91.5 },
+  site: { x: 71, y: 0, w: 29, h: 91.5 },
+  timeline: { x: 52.6, y: 91.5, w: 47.4, h: 8.5 },
 }
