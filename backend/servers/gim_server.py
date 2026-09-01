@@ -116,4 +116,8 @@ def predict(request: PredictRequest) -> dict:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    # Several of these run at once — one request each, several instances — so
+    # the port is chosen by whoever starts them.  See config.GIM_URLS.
+    import os
+
+    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("GIM_PORT", "8001")))

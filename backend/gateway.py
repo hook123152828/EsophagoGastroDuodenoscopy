@@ -373,21 +373,22 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
     async def segment() -> None:
         """Only frames is_gim_candidate accepts ever reach this queue.
 
-        One request at a time, deliberately. GIM's endpoint is a synchronous
-        def, so FastAPI runs it in a thread pool, and a second request lands a
-        second thread inside the same mmseg model — which is not safe to run
-        forward passes through concurrently. It does not fail loudly: the
-        service stops answering, including its own health check, and the scan
-        waits on it forever. Three batches in flight bought GIM 37 -> 66 fps in
-        a bench where nothing else was running, and a hung scan the first time
-        it shared the card with GNS. The way to spend that speed is a second
-        GIM *process*, not a second thread in this one.
+        One request in flight *per instance*, never two to the same one. GIM's
+        endpoint is a synchronous def, so FastAPI hands each request to a
+        thread, and a second thread running a forward pass through the same
+        mmseg model deadlocks it — silently: the service stops answering, its
+        own health check included, and the scan waits on it forever. So the way
+        to segment faster is more instances, not more asking. The window is
+        exactly as wide as the number of them, and batch `i` goes to instance
+        `i % n`, which keeps the instances in flight distinct because the
+        indices in flight are consecutive.
         """
         batch_size = 8
+        replicas = config.GIM_URLS
 
-        async def segment_frames(frames: List[FrameRecord]) -> list:
+        async def segment_frames(url: str, frames: List[FrameRecord]) -> list:
             response = await client.post(
-                f"{config.GIM_URL}/predict",
+                f"{url}/predict",
                 json={
                     "items": [
                         {
@@ -402,16 +403,34 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
             response.raise_for_status()
             return response.json()["results"]
 
-        while True:
+        finished = False
+        served = 0
+        while not finished:
             ready = await queue.get()
             if ready is None:
                 break
 
+            # Take whatever else is already waiting: one GNS batch turns up
+            # only a handful of NBI frames, which is not enough to keep every
+            # instance busy.
+            while not queue.empty():
+                more = queue.get_nowait()
+                if more is None:
+                    finished = True
+                    break
+                ready.extend(more)
+
             masks_dir.mkdir(parents=True, exist_ok=True)
-            for start in range(0, len(ready), batch_size):
-                chunk = ready[start : start + batch_size]
+            chunks = [
+                ready[start : start + batch_size]
+                for start in range(0, len(ready), batch_size)
+            ]
+
+            async def segment_chunk(index: int) -> List[FrameRecord]:
+                chunk = chunks[index]
+                url = replicas[(served + index) % len(replicas)]
                 for frame, result in zip(
-                    chunk, await _in_halves(segment_frames, chunk)
+                    chunk, await _in_halves(lambda f: segment_frames(url, f), chunk)
                 ):
                     frame.gim = GimResult(
                         score=result["score"],
@@ -422,6 +441,9 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
                             else None
                         ),
                     )
+                return chunk
+
+            async for chunk in _windowed(segment_chunk, len(chunks), len(replicas)):
                 session.publish_frames(chunk)
                 state["processed"] += len(chunk)
 
@@ -436,6 +458,10 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
                     share = min(share, 0.99)
                 state["reported"] = max(state["reported"], share)
                 session.set_progress(gim=state["reported"])
+
+            # Carry the rotation across queue items so a short batch does not
+            # send the next one back to the instance that just worked.
+            served += len(chunks)
 
         session.set_progress(gim=1.0)
 
@@ -528,13 +554,22 @@ async def health() -> dict:
             except httpx.RequestError:
                 return False
 
-        gns, gim, cgi, polyp = await asyncio.gather(
+        gns, cgi, polyp, *gim = await asyncio.gather(
             up(config.GNS_URL),
-            up(config.GIM_URL),
             up(config.CGI_URL),
             up(config.POLYP_URL),
+            *(up(url) for url in config.GIM_URLS),
         )
-    return {"gateway": True, "gns": gns, "gim": gim, "cgi": cgi, "polyp": polyp}
+    return {
+        "gateway": True,
+        "gns": gns,
+        # Every instance has to answer: one that has wedged takes the batches
+        # sent to it down with it, and the scan with those.
+        "gim": all(gim),
+        "gim_instances": sum(gim),
+        "cgi": cgi,
+        "polyp": polyp,
+    }
 
 
 @app.get("/api/videos")

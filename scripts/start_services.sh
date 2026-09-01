@@ -9,6 +9,10 @@ cd "$ROOT"
 
 GNS_ENV="${GNS_ENV:-GNS}"
 GIM_ENV="${GIM_ENV:-IM_web}"
+# Segmentation is ~80% of the scan's critical path and cannot be asked for
+# more at once (see backend/config.py GIM_URLS), so it scales by instances.
+# About 5 GB of card each.
+GIM_REPLICAS="${GIM_REPLICAS:-2}"
 CGI_ENV="${CGI_ENV:-cgi_env}"
 POLYP_ENV="${POLYP_ENV:-polyp_env}"
 GATEWAY_ENV="${GATEWAY_ENV:-endo-gateway}"
@@ -59,7 +63,7 @@ launch() {
     echo "   see README.md for how to create it" >&2
     return 1
   fi
-  "$python" -m "$module" >"logs/$name.log" 2>&1 &
+  GIM_PORT="${GIM_PORT:-}" "$python" -m "$module" >"logs/$name.log" 2>&1 &
   echo "$!" >"logs/$name.pid"
   echo "   $name  (pid $!, env $env_name)"
 }
@@ -90,7 +94,13 @@ wait_for() {
 
 echo "starting services..."
 launch "$GNS_ENV"     backend.servers.gns_server gns
-launch "$GIM_ENV"     backend.servers.gim_server gim
+gim_urls=""
+for ((i = 0; i < GIM_REPLICAS; i++)); do
+  port=$((8001 + (i == 0 ? 0 : 10 + i - 1)))     # 8001, 8011, 8012, ...
+  GIM_PORT="$port" launch "$GIM_ENV" backend.servers.gim_server "gim$([[ $i -gt 0 ]] && echo "$i")"
+  gim_urls+="${gim_urls:+,}http://127.0.0.1:$port"
+done
+export GIM_URLS="$gim_urls"
 launch "$CGI_ENV"     backend.servers.cgi_server cgi
 launch "$POLYP_ENV"   backend.servers.polyp_server polyp
 launch "$GATEWAY_ENV" backend.gateway            gateway
@@ -102,7 +112,10 @@ failed=0
 wait_for gateway "http://127.0.0.1:8080/api/health" || failed=1
 wait_for cgi     "http://127.0.0.1:8002/health"     || failed=1
 wait_for gns     "http://127.0.0.1:8000/health"     || failed=1
-wait_for gim     "http://127.0.0.1:8001/health"     || failed=1
+for ((i = 0; i < GIM_REPLICAS; i++)); do
+  port=$((8001 + (i == 0 ? 0 : 10 + i - 1)))
+  wait_for "gim$([[ $i -gt 0 ]] && echo "$i")" "http://127.0.0.1:$port/health" || failed=1
+done
 wait_for polyp   "http://127.0.0.1:8003/health"     || failed=1
 
 echo

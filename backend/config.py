@@ -55,6 +55,20 @@ SESSION_DIR = _path("SESSION_DIR", REPO_ROOT / "backend" / "sessions")
 GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8080"))
 GNS_URL = os.getenv("GNS_URL", "http://127.0.0.1:8000").rstrip("/")
 GIM_URL = os.getenv("GIM_URL", "http://127.0.0.1:8001").rstrip("/")
+
+# Every GIM instance the scan may use, in order.
+#
+# Segmentation is the scan's critical path — on a 14-minute procedure it is
+# ~80% of it — and it cannot be sped up by asking one instance for more at
+# once: its endpoint is synchronous, so a second concurrent request runs a
+# second thread through the same mmseg model and deadlocks it.  More instances
+# is the way, each still answering one request at a time.  Roughly 5 GB of card
+# apiece.
+GIM_URLS = [
+    url.strip().rstrip("/")
+    for url in os.getenv("GIM_URLS", GIM_URL).split(",")
+    if url.strip()
+]
 CGI_URL = os.getenv("CGI_URL", "http://127.0.0.1:8002").rstrip("/")
 POLYP_URL = os.getenv("POLYP_URL", "http://127.0.0.1:8003").rstrip("/")
 
