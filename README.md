@@ -211,8 +211,11 @@ pip install "numpy<2" "opencv-python==4.11.0.86"
 ```bash
 conda create -y -n endo-gateway python=3.11
 conda activate endo-gateway
-pip install fastapi uvicorn httpx pydantic python-multipart
+pip install fastapi uvicorn httpx pydantic python-multipart Pillow
 ```
+
+> `Pillow` 是偵測內視鏡畫面位置用的（`backend/roi.py`）。刻意只用 PIL 而不加
+> numpy / opencv：這個環境要保持輕量，而偵測只在建立 session 時跑幾幀。
 
 > `python-multipart` 是影片上傳需要的，少了它 `POST /api/videos` 會失敗。
 
@@ -449,6 +452,12 @@ numpy 2.x 與 torch 2.0.x 不相容，裝 `"numpy<2"`。
 `start_services.sh` 每次都會先呼叫 `stop_services.sh` 清場，所以重複執行是安全的。
 若曾用其他方式手動啟動過而留下孤兒，`stop_services.sh` 除了讀 `logs/*.pid`，
 也會掃描 8000/8001/8002/8003/8080 這幾個 port 並關掉還在監聽的 process。
+
+**建立 session 回 422「Could not find the endoscope's field of view」**
+內視鏡畫面的位置是逐支影片偵測的（見 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §2），
+取樣 5 幀至少要有 3 幀找得到。整支都是暗畫面、或不是主機畫面（例如已經裁好、
+沒有黑底的片段）就會偵測不到。系統**不會退回猜測**——裁切是把病歷號與生日擋在
+系統之外的東西，猜錯不是外觀問題。
 
 **影片播不出來**
 `<video>` 的來源是 gateway 的 `/media`，只服務 `VIDEO_DIR` 底下的檔案。

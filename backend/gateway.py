@@ -33,6 +33,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import config
 from backend.fhir import build_bundle
+from backend.roi import detect_roi
 from backend.protocol import (
     POLYP_REGIONS,
     StartUploadRequest,
@@ -772,12 +773,26 @@ async def create_session(request: CreateSessionRequest) -> SessionManifest:
     except (subprocess.CalledProcessError, OSError, KeyError, ValueError) as error:
         raise HTTPException(500, f"Could not read {path.name}: {error}") from error
 
+    # Found in the recording rather than assumed. The measured constant held
+    # for one console geometry; anything else was cropped to the wrong place,
+    # or — where the crop fell outside the frame — failed several seconds later
+    # with an ffmpeg message about crop dimensions and no mention of why.
+    try:
+        x, y, width, height = detect_roi(config.FFMPEG_BIN, path, video.duration_s)
+    except ValueError as error:
+        raise HTTPException(
+            422,
+            f"Could not find the endoscope's field of view in {path.name}: {error}. "
+            "The crop is what keeps patient identifiers out of every frame this "
+            "system stores, so it is not guessed.",
+        ) from error
+
     manifest = SessionManifest(
         session_id=uuid.uuid4().hex,
         created_at=datetime.now(timezone.utc).isoformat(),
         status="extracting",
         video=video,
-        roi=Roi(),
+        roi=Roi(x=x, y=y, width=width, height=height),
         sampling=request.sampling or Sampling(),
         progress=Progress(),
     )
