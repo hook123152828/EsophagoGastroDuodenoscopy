@@ -371,8 +371,37 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
         await queue.put(None)
 
     async def segment() -> None:
-        """Only frames is_gim_candidate accepts ever reach this queue."""
+        """Only frames is_gim_candidate accepts ever reach this queue.
+
+        One request at a time, deliberately. GIM's endpoint is a synchronous
+        def, so FastAPI runs it in a thread pool, and a second request lands a
+        second thread inside the same mmseg model — which is not safe to run
+        forward passes through concurrently. It does not fail loudly: the
+        service stops answering, including its own health check, and the scan
+        waits on it forever. Three batches in flight bought GIM 37 -> 66 fps in
+        a bench where nothing else was running, and a hung scan the first time
+        it shared the card with GNS. The way to spend that speed is a second
+        GIM *process*, not a second thread in this one.
+        """
         batch_size = 8
+
+        async def segment_frames(frames: List[FrameRecord]) -> list:
+            response = await client.post(
+                f"{config.GIM_URL}/predict",
+                json={
+                    "items": [
+                        {
+                            "path": str(frame_path(session, frame.index)),
+                            "mask_out": str(masks_dir / f"{frame.index + 1:06d}.png"),
+                        }
+                        for frame in frames
+                    ]
+                },
+                timeout=180.0,
+            )
+            response.raise_for_status()
+            return response.json()["results"]
+
         while True:
             ready = await queue.get()
             if ready is None:
@@ -381,26 +410,6 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
             masks_dir.mkdir(parents=True, exist_ok=True)
             for start in range(0, len(ready), batch_size):
                 chunk = ready[start : start + batch_size]
-
-                async def segment_frames(frames: List[FrameRecord]) -> list:
-                    response = await client.post(
-                        f"{config.GIM_URL}/predict",
-                        json={
-                            "items": [
-                                {
-                                    "path": str(frame_path(session, frame.index)),
-                                    "mask_out": str(
-                                        masks_dir / f"{frame.index + 1:06d}.png"
-                                    ),
-                                }
-                                for frame in frames
-                            ]
-                        },
-                        timeout=180.0,
-                    )
-                    response.raise_for_status()
-                    return response.json()["results"]
-
                 for frame, result in zip(
                     chunk, await _in_halves(segment_frames, chunk)
                 ):
@@ -430,9 +439,14 @@ async def run_scan(session: Session, client: httpx.AsyncClient) -> None:
 
         session.set_progress(gim=1.0)
 
-    # gather rather than two awaits: an exception in either must not leave the
-    # other running against a session that is already failing.
-    await asyncio.gather(classify(), segment())
+    # A task group rather than gather: the two stages wait on each other
+    # through the queue, so if one fails the other blocks on it forever —
+    # gather would then sit waiting for a coroutine that can never finish, and
+    # the scan would hang in "scanning" with the exception held unraised. A
+    # group cancels the sibling and lets the failure out.
+    async with asyncio.TaskGroup() as group:
+        group.create_task(classify())
+        group.create_task(segment())
 
 
 async def process(session: Session) -> None:
