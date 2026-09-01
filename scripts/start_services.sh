@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the four model microservices and the gateway.
+# Start the model microservices, the gateway and the front-end dev server.
 # Each model runs in its own conda environment; override the names below if
 # yours differ.  Logs land in logs/.
 set -euo pipefail
@@ -128,6 +128,42 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
+# --- Front-end ---------------------------------------------------------------
+# Started here rather than left to the reader: the page is useless without the
+# gateway and the gateway is hard to look at without the page, so one command
+# brings up the thing you actually wanted.
 echo
-echo "gateway  http://127.0.0.1:8080"
-echo "frontend cd frontend && npm run dev   ->  http://localhost:5173"
+if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+  echo "!! frontend/node_modules is missing. Run 'cd frontend && npm install' first." >&2
+  exit 1
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "!! npm not found on PATH — see README.md for the Node version required." >&2
+  exit 1
+fi
+
+echo "starting frontend..."
+( cd "$ROOT/frontend" && npm run dev ) >"logs/frontend.log" 2>&1 &
+echo "$!" >"logs/frontend.pid"
+echo "   frontend  (pid $!)"
+
+# Vite binds in well under a second once it has started, but a first run after
+# a dependency change has to prebundle, which takes longer.
+for _ in $(seq 1 60); do
+  if probe http://127.0.0.1:5173/ >/dev/null; then
+    break
+  fi
+  if ! kill -0 "$(cat logs/frontend.pid)" 2>/dev/null; then
+    echo "!! frontend exited during startup — see logs/frontend.log:" >&2
+    tail -n 5 logs/frontend.log | sed 's/^/     /' >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+echo
+echo "gateway   http://127.0.0.1:8080"
+echo "frontend  http://localhost:5173"
+echo
+echo "stop everything with: bash scripts/stop_services.sh"

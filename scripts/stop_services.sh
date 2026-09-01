@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop everything started by start_services.sh.
+# Stop everything started by start_services.sh, front-end included.
 #
 # Kills by pid file first, then sweeps whatever is still listening on the
 # service ports. The port sweep matters because a pid file can end up pointing
@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PORTS="${PORTS:-8000 8001 8002 8003 8080 8011 8012 8013}"
+PORTS="${PORTS:-5173 8000 8001 8002 8003 8080 8011 8012 8013}"
 stopped=0
 
 for pidfile in logs/*.pid; do

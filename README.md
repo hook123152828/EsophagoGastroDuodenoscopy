@@ -227,17 +227,32 @@ cd frontend && npm install
 ## 三、啟動
 
 ```bash
-bash scripts/start_services.sh     # 五支服務，log 在 logs/
-cd frontend && npm run dev         # http://localhost:5173
+bash scripts/start_services.sh     # 模型、gateway、前端，log 都在 logs/
 ```
 
-`start_services.sh` 會等模型載入完成並印出健康狀態，應該看到：
+一支指令把整套帶起來。`start_services.sh` 會等模型載入完成、印出健康狀態，
+再啟動前端：
 
-```json
-{"gateway":true,"gns":true,"gim":true,"cgi":true,"polyp":true}
+```
+   gateway ready
+   cgi ready
+   gns ready
+   gim ready
+   gim1 ready
+   polyp ready
+
+{"gateway":true,"gns":true,"gim":true,"gim_instances":2,"cgi":true,"polyp":true}
+
+starting frontend...
+
+gateway   http://127.0.0.1:8080
+frontend  http://localhost:5173
 ```
 
-關閉：
+`gim_instances` 是實際起來的 GIM 行程數（`GIM_REPLICAS`，預設 2）。
+前端需要先裝過相依（`cd frontend && npm install`），否則腳本會直接報錯退出。
+
+關閉（含前端）：
 
 ```bash
 bash scripts/stop_services.sh
