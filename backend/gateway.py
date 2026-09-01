@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import config
+from backend.fhir import build_bundle
 from backend.protocol import (
     POLYP_REGIONS,
     AnalyzeRequest,
@@ -888,6 +889,23 @@ async def analyze(session_id: str, request: AnalyzeRequest) -> FrameRecord:
 
     session.publish_frames([frame])
     return frame
+
+
+@app.get("/api/sessions/{session_id}/fhir")
+def session_fhir(session_id: str, patient: str) -> dict:
+    """This examination as a FHIR R4 collection Bundle.
+
+    ``patient`` is the subject reference to write into it, e.g.
+    ``Patient/12345``. It is required and it is not stored: this system holds
+    no patient data — the ROI crop exists partly to remove the identifiers
+    printed on the console output — so whoever exports says who these findings
+    belong to, and the answer travels no further than the response.
+    """
+    if not patient.strip():
+        raise HTTPException(422, "patient reference must not be empty")
+
+    session = _session(session_id)
+    return build_bundle(session.manifest, session.frames, patient.strip())
 
 
 @app.get("/api/sessions/{session_id}/events")

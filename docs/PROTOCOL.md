@@ -425,6 +425,16 @@ Base URL 預設 `http://127.0.0.1:8080`。
 - 伺服器端一次只跑一個隨選推論。呼叫端應自行做 single-flight，不要塞滿佇列。
   息肉要整段掃的話請自行節流，不要用 30Hz 去打。
 
+### `GET /api/sessions/{id}/fhir`
+把這次檢查匯出成 HL7 FHIR R4 的 collection Bundle。
+
+```
+GET /api/sessions/{id}/fhir?patient=Patient/12345
+```
+
+`patient` 必填，且**不會被儲存**——本系統不持有病患資料，subject 由呼叫端指定。
+詳見 [`FHIR.md`](FHIR.md)。
+
 ### `GET /api/sessions/{id}/events`
 SSE，見 §3.3。連線建立時會先補送一次當下的 `status` 與 `progress`。
 

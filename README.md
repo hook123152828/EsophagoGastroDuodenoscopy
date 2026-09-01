@@ -21,7 +21,8 @@
 契約規格見 **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)**。要開發 `/report` 的人請先讀它。
 
 法規考量（IEC 62304 軟體安全分類、SOUP 清單、風險分析、已知異常與測試缺口）
-見 **[`docs/IEC62304.md`](docs/IEC62304.md)**。
+見 **[`docs/IEC62304.md`](docs/IEC62304.md)**；
+與院內系統互通的 HL7 FHIR 匯出見 **[`docs/FHIR.md`](docs/FHIR.md)**。
 
 ---
 
