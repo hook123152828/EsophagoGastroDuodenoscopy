@@ -90,6 +90,30 @@ export default function ScopeStage({
     }
   }, [videoRef, manifest.roi, box])
 
+  // A source the browser cannot decode used to leave the stage black with
+  // nothing said, while the analysis ran perfectly underneath it. The element
+  // knows why it failed; this puts it where it can be read.
+  const [playbackError, setPlaybackError] = useState<string | null>(null)
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const onError = () =>
+      setPlaybackError(
+        video.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+          ? 'This recording is in a format the browser cannot play'
+          : (video.error?.message ?? 'The recording could not be played'),
+      )
+    const onLoaded = () => setPlaybackError(null)
+
+    video.addEventListener('error', onError)
+    video.addEventListener('loadeddata', onLoaded)
+    return () => {
+      video.removeEventListener('error', onError)
+      video.removeEventListener('loadeddata', onLoaded)
+    }
+  }, [videoRef])
+
   const gim = maskFrame?.gim ?? null
   const polyp = showPolyp ? (polypFrame?.polyp ?? null) : null
   const maskVisible = showMask && Boolean(maskFrame?.gim?.mask_url)
@@ -114,6 +138,15 @@ export default function ScopeStage({
           preload="metadata"
           playsInline
         />
+
+        {playbackError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6 text-center">
+            <p className="text-sm text-scope-alert">{playbackError}</p>
+            <p className="text-xs text-console-muted">
+              The analysis is unaffected — it reads the recording on the server.
+            </p>
+          </div>
+        )}
 
         {(maskVisible || polypVisible) && <MaskBoundaryFilter />}
 

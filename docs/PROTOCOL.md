@@ -132,6 +132,8 @@ interface SessionManifest {
     fps: number                 // 來源影片 fps，例如 60
     duration_s: number
     media_url: string | null    // 可直接餵給 <video> 的串流網址（支援 Range）
+                                // 來源若不是瀏覽器能解的格式，這裡指向自動
+                                // 轉出的 H.264 代理檔，不是 path 那個檔案
   }                             // 影片不在 VIDEO_DIR 內時為 null
 
   roi: { x: number; y: number; width: number; height: number }

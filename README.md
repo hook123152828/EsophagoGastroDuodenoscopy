@@ -463,6 +463,12 @@ numpy 2.x 與 torch 2.0.x 不相容，裝 `"numpy<2"`。
 `<video>` 的來源是 gateway 的 `/media`，只服務 `VIDEO_DIR` 底下的檔案。
 影片放在別處時 `media_url` 會是 `null`。
 
+瀏覽器能解的格式比 ffmpeg 少得多，所以**掃描正常但畫面全黑**是有可能的
+（實例：raw video 裝在 AVI 容器裡，Chrome 連容器都打不開）。建 session 時會
+偵測這種來源並轉出一份 H.264 代理檔放在 `video/.proxies/`，`media_url` 指過去；
+原始檔不動，模型讀的一直是原始檔。已經是 H.264 MP4 的來源不會被轉碼。
+若播放仍失敗，畫面上會直接寫出原因，不再只是一片黑。
+
 **IM 疊圖沒出現**
 GIM 只在 NBI 影像上訓練，白光幀的按鈕會置灰。即使是 NBI，也只有實際偵測到
 IM（score ≥ 1）的幀才有 mask —— `video1.mp4` 在 `15/15/5` 設定下，2,035 個

@@ -144,7 +144,8 @@ def probe(path: Path) -> VideoInfo:
     result = subprocess.run(
         [
             config.FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate:format=duration",
+            "-show_entries",
+            "stream=width,height,r_frame_rate,codec_name:format=duration,format_name",
             "-of", "json", str(path),
         ],
         capture_output=True,
@@ -154,13 +155,15 @@ def probe(path: Path) -> VideoInfo:
     payload = json.loads(result.stdout)
     stream = payload["streams"][0]
     numerator, _, denominator = stream["r_frame_rate"].partition("/")
+    codec = stream.get("codec_name", "")
+    container = payload["format"].get("format_name", "")
 
     try:
         media_url = f"/media/{path.relative_to(config.VIDEO_DIR)}"
     except ValueError:
         media_url = None  # outside VIDEO_DIR, not streamable
 
-    return VideoInfo(
+    info = VideoInfo(
         path=str(path),
         filename=path.name,
         width=stream["width"],
@@ -169,6 +172,67 @@ def probe(path: Path) -> VideoInfo:
         duration_s=float(payload["format"]["duration"]),
         media_url=media_url,
     )
+    # Carried alongside rather than in the manifest: whether a file needs
+    # transcoding is this module's business, not the contract's.
+    return info, codec, container
+
+
+# What a browser will actually play. ffmpeg reads far more than this — a
+# recording can scan perfectly and still leave the stage black, because
+# decoding it server-side and decoding it in Chrome are different questions.
+PLAYABLE_CODECS = {"h264", "vp8", "vp9", "av1"}
+PLAYABLE_CONTAINERS = {"mp4", "mov", "webm", "m4v", "3gp"}
+
+PROXY_DIR_NAME = ".proxies"
+
+
+def _is_playable(codec: str, container: str) -> bool:
+    names = {part.strip() for part in container.split(",")}
+    return codec in PLAYABLE_CODECS and bool(names & PLAYABLE_CONTAINERS)
+
+
+def playable_source(path: Path, codec: str, container: str) -> Path:
+    """``path``, or an H.264 copy of it that a browser can open.
+
+    The models never needed this — ffmpeg reads the source directly — but the
+    page plays the recording, and a format Chrome has no demuxer for leaves the
+    stage black with the analysis running perfectly underneath it. Raw video in
+    an AVI is the case that turned up: unplayable, and 1.7 GB for under two
+    minutes, so streaming it was never going to work either. Transcoded it is
+    22 MB and takes five seconds.
+
+    Kept beside the original so a second session on the same recording reuses
+    it, and out of the way of the video listing, which does not recurse.
+    """
+    if _is_playable(codec, container):
+        return path
+
+    proxies = config.VIDEO_DIR / PROXY_DIR_NAME
+    proxies.mkdir(parents=True, exist_ok=True)
+    proxy = proxies / f"{path.stem}.mp4"
+    if proxy.exists() and proxy.stat().st_mtime >= path.stat().st_mtime:
+        return proxy
+
+    partial = proxy.with_suffix(".partial.mp4")
+    result = subprocess.run(
+        [config.FFMPEG_BIN, "-loglevel", "error", "-i", str(path),
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+         "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart",
+         "-y", str(partial)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not partial.exists():
+        partial.unlink(missing_ok=True)
+        raise HTTPException(
+            500,
+            f"Could not transcode {path.name} for playback: "
+            f"{result.stderr.strip()[:300]}",
+        )
+    # Renamed only once it is whole, so an interrupted transcode cannot be
+    # picked up as a finished one by the next session.
+    partial.replace(proxy)
+    return proxy
 
 
 # --- Pipeline ----------------------------------------------------------------
@@ -769,9 +833,14 @@ async def create_session(request: CreateSessionRequest) -> SessionManifest:
         )
 
     try:
-        video = probe(path)
+        video, codec, container = probe(path)
     except (subprocess.CalledProcessError, OSError, KeyError, ValueError) as error:
         raise HTTPException(500, f"Could not read {path.name}: {error}") from error
+
+    # The page plays this; the models read the original either way.
+    playable = playable_source(path, codec, container)
+    if playable != path:
+        video.media_url = f"/media/{playable.relative_to(config.VIDEO_DIR)}"
 
     # Found in the recording rather than assumed. The measured constant held
     # for one console geometry; anything else was cropped to the wrong place,
