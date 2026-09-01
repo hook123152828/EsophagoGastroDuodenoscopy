@@ -56,32 +56,80 @@ export async function listVideos(): Promise<VideoFile[]> {
  * fetch cannot report upload progress, which would leave the user staring at a
  * dead screen for minutes.
  */
-export function uploadVideo(
+/**
+ * Largest chunk to try first, and the smallest worth falling back to.
+ *
+ * Whatever proxy sits between the browser and the gateway decides how big a
+ * request may be, and it does not say so until one is refused — a VS Code dev
+ * tunnel fronts this with an nginx that answers 413 and never passes the
+ * request on. So the size is discovered rather than configured: start large,
+ * halve on refusal, and stop calling it a size problem below the floor.
+ */
+const CHUNK_MAX = 8 * 1024 * 1024
+const CHUNK_MIN = 256 * 1024
+
+interface UploadProgress {
+  upload_id: string
+  received_bytes: number
+  size_bytes: number
+}
+
+/**
+ * Send a video to the backend's VIDEO_DIR, in pieces.
+ *
+ * Resumable by construction: the upload is identified by the file's name and
+ * length, so asking to start one that was interrupted returns how many bytes
+ * survived, and sending continues from there. Reloading the page and picking
+ * the same file again resumes it.
+ */
+export async function uploadVideo(
   file: File,
   onProgress?: (fraction: number) => void,
 ): Promise<VideoFile> {
-  return new Promise((resolve, reject) => {
-    const form = new FormData()
-    form.append('file', file)
-
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${GATEWAY_URL}/api/videos`)
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress?.(event.loaded / event.total)
-    }
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText) as VideoFile)
-      } else {
-        reject(new Error(`Upload failed (${xhr.status}): ${xhr.responseText}`))
-      }
-    }
-    xhr.onerror = () => reject(new Error('Upload failed: network error'))
-    xhr.onabort = () => reject(new Error('Upload cancelled'))
-
-    xhr.send(form)
+  const opened = await request<UploadProgress>('/api/videos/uploads', {
+    method: 'POST',
+    body: JSON.stringify({ filename: file.name, size_bytes: file.size }),
   })
+
+  let sent = opened.received_bytes
+  let chunkSize = CHUNK_MAX
+  onProgress?.(file.size ? sent / file.size : 0)
+
+  while (sent < file.size) {
+    const end = Math.min(sent + chunkSize, file.size)
+    const response = await fetch(
+      `${GATEWAY_URL}/api/videos/uploads/${opened.upload_id}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file.slice(sent, end),
+      },
+    )
+
+    if (response.status === 413) {
+      // Refused for size, by something that is not the gateway. Try smaller.
+      if (chunkSize <= CHUNK_MIN) {
+        throw new Error(
+          `Upload failed: a proxy rejected even ${CHUNK_MIN / 1024} KB as too large`,
+        )
+      }
+      chunkSize = Math.max(CHUNK_MIN, Math.floor(chunkSize / 2))
+      continue
+    }
+    if (!response.ok) {
+      throw new Error(`Upload failed (${response.status}): ${await response.text()}`)
+    }
+
+    // Trusted over the local count: the server says what it actually holds,
+    // which is what a resume would continue from.
+    sent = ((await response.json()) as UploadProgress).received_bytes
+    onProgress?.(file.size ? sent / file.size : 1)
+  }
+
+  return request<VideoFile>(
+    `/api/videos/uploads/${opened.upload_id}/complete`,
+    { method: 'POST' },
+  )
 }
 
 export function listSessions(): Promise<SessionManifest[]> {

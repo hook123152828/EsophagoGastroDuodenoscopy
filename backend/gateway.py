@@ -13,6 +13,7 @@ See docs/PROTOCOL.md — that file is the contract, this file implements it.
 """
 
 import asyncio
+import hashlib
 import json
 import shutil
 import subprocess
@@ -25,7 +26,7 @@ from typing import Dict, List, Optional
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +35,8 @@ from backend import config
 from backend.fhir import build_bundle
 from backend.protocol import (
     POLYP_REGIONS,
+    StartUploadRequest,
+    UploadProgress,
     AnalyzeRequest,
     CgiRequest,
     CreateSessionRequest,
@@ -625,6 +628,126 @@ async def upload_video(file: UploadFile = File(...)) -> dict:
         "filename": target.name,
         "size_bytes": target.stat().st_size,
     }
+
+
+# --- Chunked upload ----------------------------------------------------------
+# A single multi-gigabyte POST does not survive every path to this server: a
+# VS Code dev tunnel fronts it with an nginx whose client_max_body_size rejects
+# the request at the edge, so the gateway never sees it and cannot say anything
+# useful about it. Uploading in pieces keeps each request small enough to pass
+# whatever sits in the way, and makes an interrupted upload resumable instead
+# of something to start over.
+UPLOAD_DIR_NAME = ".uploads"
+
+
+def _upload_paths(upload_id: str) -> tuple:
+    directory = config.VIDEO_DIR / UPLOAD_DIR_NAME
+    return directory / f"{upload_id}.part", directory / f"{upload_id}.json"
+
+
+def _upload_id(filename: str, size_bytes: int) -> str:
+    """Same file, same id — so a reloaded page resumes rather than restarts."""
+    digest = hashlib.sha256(f"{filename}:{size_bytes}".encode()).hexdigest()
+    return digest[:32]
+
+
+def _checked_name(filename: str) -> str:
+    """The basename, if it is a video. Never a path — an upload cannot escape."""
+    name = Path(filename or "upload.mp4").name
+    if Path(name).suffix.lower() not in VIDEO_SUFFIXES:
+        raise HTTPException(
+            400, f"Unsupported video type: {Path(name).suffix or '(none)'}"
+        )
+    return name
+
+
+@app.post("/api/videos/uploads")
+def start_upload(request: StartUploadRequest) -> UploadProgress:
+    """Open an upload, or report how far an earlier attempt at it got."""
+    name = _checked_name(request.filename)
+    if request.size_bytes <= 0:
+        raise HTTPException(422, "size_bytes must be positive")
+
+    upload_id = _upload_id(name, request.size_bytes)
+    part, meta = _upload_paths(upload_id)
+    part.parent.mkdir(parents=True, exist_ok=True)
+
+    if not meta.exists():
+        meta.write_text(
+            json.dumps({"filename": name, "size_bytes": request.size_bytes})
+        )
+        part.touch()
+
+    return UploadProgress(
+        upload_id=upload_id,
+        received_bytes=part.stat().st_size if part.exists() else 0,
+        size_bytes=request.size_bytes,
+    )
+
+
+@app.put("/api/videos/uploads/{upload_id}")
+async def append_chunk(upload_id: str, request: Request) -> UploadProgress:
+    """Append the body to this upload. Chunks arrive in order, one at a time."""
+    part, meta = _upload_paths(upload_id)
+    if not meta.exists():
+        raise HTTPException(404, f"Unknown upload {upload_id}")
+    declared = json.loads(meta.read_text())
+
+    with part.open("ab") as handle:
+        async for chunk in request.stream():
+            handle.write(chunk)
+            # Checked while writing rather than after: a client that keeps
+            # sending must not be able to fill the disk with one request.
+            if handle.tell() > declared["size_bytes"]:
+                handle.truncate(declared["size_bytes"])
+                raise HTTPException(422, "Upload is longer than it declared")
+
+    return UploadProgress(
+        upload_id=upload_id,
+        received_bytes=part.stat().st_size,
+        size_bytes=declared["size_bytes"],
+    )
+
+
+@app.post("/api/videos/uploads/{upload_id}/complete", status_code=201)
+def complete_upload(upload_id: str) -> dict:
+    """Move a finished upload into VIDEO_DIR under a name nothing else uses."""
+    part, meta = _upload_paths(upload_id)
+    if not meta.exists() or not part.exists():
+        raise HTTPException(404, f"Unknown upload {upload_id}")
+    declared = json.loads(meta.read_text())
+
+    received = part.stat().st_size
+    if received != declared["size_bytes"]:
+        raise HTTPException(
+            409,
+            f"Upload is incomplete: {received} of {declared['size_bytes']} bytes",
+        )
+
+    config.VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    target = config.VIDEO_DIR / declared["filename"]
+    stem, suffix = target.stem, target.suffix
+    counter = 1
+    while target.exists():
+        target = config.VIDEO_DIR / f"{stem}-{counter}{suffix}"
+        counter += 1
+
+    part.replace(target)
+    meta.unlink(missing_ok=True)
+    return {
+        "path": str(target),
+        "filename": target.name,
+        "size_bytes": target.stat().st_size,
+    }
+
+
+@app.delete("/api/videos/uploads/{upload_id}")
+def cancel_upload(upload_id: str) -> dict:
+    """Throw away a part-finished upload."""
+    part, meta = _upload_paths(upload_id)
+    part.unlink(missing_ok=True)
+    meta.unlink(missing_ok=True)
+    return {"cancelled": upload_id}
 
 
 @app.post("/api/sessions", status_code=201)

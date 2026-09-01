@@ -72,8 +72,8 @@ class Roi(BaseModel):
 
 
 class Sampling(BaseModel):
-    extract_fps: float = 30
-    gns_fps: float = 30
+    extract_fps: float = 60
+    gns_fps: float = 60
     gim_fps: float = 15
 
 
@@ -169,6 +169,21 @@ class AnalyzeRequest(BaseModel):
     # nothing runs it in the background.  Callers ask for it only while they
     # are actually going to show it.
     polyp: bool = False
+
+
+class StartUploadRequest(BaseModel):
+    """Begin, or resume, a chunked upload of one video."""
+
+    filename: str
+    size_bytes: int
+
+
+class UploadProgress(BaseModel):
+    """How much of that video the server already holds."""
+
+    upload_id: str
+    received_bytes: int
+    size_bytes: int
 
 
 class CgiRequest(BaseModel):

@@ -445,12 +445,44 @@ SSE，見 §3.3。連線建立時會先補送一次當下的 `status` 與 `progr
 { "videos": [ { "path": "...", "filename": "video1.mp4", "size_bytes": 2503119646 } ] }
 ```
 
-### `POST /api/videos`
-`multipart/form-data`，欄位名 `file`。把影片存進 `VIDEO_DIR`，回傳一筆 `VideoFile`。
+### `POST /api/videos/uploads` → `PUT …/{id}` → `POST …/{id}/complete`
+分塊上傳，**前端用的是這條路**。
 
-檔名只取 basename（不可能寫到 `VIDEO_DIR` 之外），同名會自動加 `-1`、`-2` 後綴，
-副檔名限 `.mp4 .avi .mov .mkv`，其餘回 400。伺服器端以 4MB 分塊寫入磁碟，
-不會把整支影片讀進記憶體。
+```jsonc
+// 1. 開啟（或續傳）
+POST /api/videos/uploads
+{ "filename": "video1.mp4", "size_bytes": 2503119646 }
+-> { "upload_id": "…", "received_bytes": 0, "size_bytes": 2503119646 }
+
+// 2. 依序附加，每次一塊（body 是原始位元組，不是 multipart）
+PUT /api/videos/uploads/{upload_id}
+-> { "upload_id": "…", "received_bytes": 8388608, "size_bytes": 2503119646 }
+
+// 3. 完成，檔案移進 VIDEO_DIR
+POST /api/videos/uploads/{upload_id}/complete
+-> VideoFile
+
+// 放棄
+DELETE /api/videos/uploads/{upload_id}
+```
+
+**為什麼要分塊**：單一個幾 GB 的 POST 不是每條路徑都過得去。VS Code dev tunnel
+前面有一層 nginx，`client_max_body_size` 會在邊緣就回 413，gateway 根本收不到
+請求，也就無從回報。分塊之後每個請求都夠小。
+
+**續傳**：`upload_id` 由「檔名 + 長度」推導，所以同一個檔案重新開啟會回報
+已收到的位元組數，從那裡接續即可。重新整理頁面再選同一個檔案就會續傳。
+前端遇到 413 會自動把塊大小減半重試（8 MB 起，下限 256 KB）。
+
+**限制**：`received_bytes` 超過宣告長度回 422；未傳完就 complete 回 409；
+副檔名限 `.mp4 .avi .mov .mkv`，其餘回 400。檔名只取 basename
+（不可能寫到 `VIDEO_DIR` 之外），同名自動加 `-1`、`-2` 後綴。
+未完成的上傳留在 `VIDEO_DIR/.uploads/`，**目前沒有自動清理**。
+
+### `POST /api/videos`
+`multipart/form-data`，欄位名 `file`，一次送完。保留給本機腳本與 curl 使用——
+經過反向代理時很可能被擋（見上），所以瀏覽器端不走這條。
+同樣以 4MB 分塊寫入磁碟，不會把整支影片讀進記憶體。
 
 ### `POST /api/cgi/predict`  ← 第二頁專用
 代理到 CGI 服務。gateway 只負責轉發，**不決定 A/B/C 三池怎麼挑**——
