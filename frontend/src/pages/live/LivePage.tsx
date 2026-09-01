@@ -15,7 +15,7 @@ import {
 } from '@/protocol'
 
 import { LayoutBlock, LayoutCanvas, useLayoutEditor } from './LayoutCanvas'
-import RegionChecklist from './RegionChecklist'
+import SiteCoverage from './SiteCoverage'
 import ScopeStage from './ScopeStage'
 import SessionPicker from './SessionPicker'
 import SidePanel from './SidePanel'
@@ -226,11 +226,12 @@ export default function LivePage() {
         </div>
 
         <LayoutBlock id="controls" label="Controls">
-          <div className="flex min-w-0 flex-col gap-3 overflow-y-auto border-l border-console-line p-4">
+          <div className="flex min-w-0 flex-col overflow-hidden border-l border-console-line">
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-3">
             <button
               type="button"
               onClick={togglePlay}
-              className="rounded bg-console-panel px-5 py-2.5 text-sm transition hover:bg-console-line"
+              className="rounded bg-console-panel px-5 py-2 text-sm transition hover:bg-console-line"
             >
               {playing ? 'Pause' : 'Play'}
             </button>
@@ -259,7 +260,7 @@ export default function LivePage() {
 
             {/* What the stage used to write over the mucosa. Off the picture it
                 can be read without covering the thing being read. */}
-            <dl className="mt-1 flex flex-col gap-2 border-t border-console-line pt-3 text-sm">
+            <dl className="flex flex-col gap-1.5 border-t border-console-line pt-2 text-sm">
               <Readout label="Light">
                 <span className={modality === 'NBI' ? 'text-scope-accent' : undefined}>
                   {modality ?? '—'}
@@ -279,13 +280,25 @@ export default function LivePage() {
                 )}
               </Readout>
 
+              {/* A finding, or why there is none. The two used to be separate:
+                  the number here and a sentence below explaining an empty
+                  overlay, which said the same thing twice whenever there was
+                  something to show. */}
               <Readout label="IM">
                 {showMask && imEligible && maskFrame?.gim ? (
                   <span className="text-im">
                     score {maskFrame.gim.score} · {maskFrame.gim.area.toFixed(1)}%
                   </span>
                 ) : (
-                  <span className="text-console-muted">—</span>
+                  <span className="text-console-muted">
+                    {!showMask
+                      ? 'off'
+                      : !imEligible
+                        ? 'gastric NBI only'
+                        : frame?.gim
+                          ? 'no finding'
+                          : 'not scanned'}
+                  </span>
                 )}
               </Readout>
 
@@ -295,7 +308,15 @@ export default function LivePage() {
                     {polypFrame.polyp.boxes.length} · {polypFrame.polyp.area.toFixed(1)}%
                   </span>
                 ) : (
-                  <span className="text-console-muted">—</span>
+                  <span className="text-console-muted">
+                    {!showPolyp
+                      ? 'off'
+                      : !polypEligible
+                        ? 'gastric WL only'
+                        : frame?.polyp
+                          ? 'none'
+                          : 'detecting…'}
+                  </span>
                 )}
               </Readout>
             </dl>
@@ -312,29 +333,13 @@ export default function LivePage() {
               </span>
             )}
 
-            <p className="text-sm leading-relaxed text-console-muted">
-              {!imEligible
-                ? modality === 'NBI'
-                  ? 'IM is assessed on gastric mucosa only'
-                  : 'white-light imaging'
-                : maskFrame?.gim?.mask_url
-                  ? `overlay from t=${maskFrame.t.toFixed(2)}s`
-                  : frame?.gim
-                    ? 'no IM finding at this timestamp'
-                    : 'IM scan has not reached this frame'}
-            </p>
+            </div>
 
-            <RegionChecklist region={region} visited={visited} />
-
-            {showPolyp && polypEligible && (
-              <p className="text-sm leading-relaxed text-console-muted">
-                {polypFrame?.polyp?.mask_url
-                  ? `${polypFrame.polyp.boxes.length} detected at t=${polypFrame.t.toFixed(2)}s`
-                  : frame?.polyp
-                    ? 'no polyp at this timestamp'
-                    : 'detecting…'}
-              </p>
-            )}
+            {/* Half the column each: the settings and the frame above, where
+                the examination has been below. */}
+            <div className="flex min-h-0 flex-1 border-t border-console-line p-4">
+              <SiteCoverage region={region} visited={visited} />
+            </div>
           </div>
         </LayoutBlock>
 
@@ -400,7 +405,7 @@ function OverlayButton({
       type="button"
       onClick={onClick}
       aria-pressed={on}
-      className={`flex items-center justify-between rounded px-5 py-2.5 text-sm transition ${
+      className={`flex items-center justify-between rounded px-5 py-2 text-sm transition ${
         on ? active : 'bg-console-panel text-console-muted hover:bg-console-line'
       }`}
     >
