@@ -443,6 +443,11 @@ envs/                    各環境的完整套件版本紀錄
 **`Numpy is not available`（torch 2.0.x）**
 numpy 2.x 與 torch 2.0.x 不相容，裝 `"numpy<2"`。
 
+**GPU 一直 100% 但沒有在掃描**
+先看 `nvidia-smi pmon -c 1`，它會顯示是哪一個行程在吃 SM。若是某個模型服務
+在沒有請求的情況下獨自佔滿，那是它卡住了——重啟該服務即可釋放。
+`/api/health` 現在看得出這種狀態（各服務會回報 `wedged`），先前不會。
+
 **`/api/health` 顯示某個模型是 `false`**
 看 `logs/<name>.log`。常見原因是權重路徑不對，或該環境缺套件。
 `start_services.sh` 會等每一支服務就緒，任一支啟動失敗時直接印出它的錯誤尾巴

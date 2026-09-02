@@ -14,7 +14,10 @@ The score and the area are measured on the model's raw output.  The PNG is the
 and why the difference is resolved here rather than in the browser.
 """
 
+import os
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
@@ -24,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
@@ -45,6 +48,27 @@ BRIGHTNESS_LOW, BRIGHTNESS_HIGH = 50, 200
 
 MODEL = None
 
+# One thread in the model at a time. FastAPI runs a synchronous endpoint in a
+# thread pool, so two overlapping requests put two threads through the same
+# mmseg model, which is not safe to do — and does not fail loudly. Measured on
+# this service: at one request at a time, forty in a row finish in six seconds
+# with the slowest at 0.40 s; at two, it runs fine for a while and then wedges
+# for good, one thread pinned at 99% of the card and never returning, while
+# /health goes on answering because the pool still has threads free.
+#
+# The lock belongs here rather than only at the caller. A caller that gets this
+# wrong takes the service down until someone restarts it, and there is more
+# than one caller.
+MODEL_LOCK = threading.Lock()
+_STATE = {"busy_since": None}
+
+# How long a request waits for the model before giving up, and how long one
+# inference may run before the service stops calling itself healthy. The second
+# is what makes a wedge visible: the health check reported this service fine
+# throughout the incident that prompted the lock.
+LOCK_WAIT_S = float(os.getenv("GIM_LOCK_WAIT_S", "120"))
+WEDGED_AFTER_S = float(os.getenv("GIM_WEDGED_AFTER_S", "300"))
+
 
 class Item(BaseModel):
     path: str
@@ -64,7 +88,15 @@ def startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": MODEL is not None, "service": "gim"}
+    busy_since = _STATE["busy_since"]
+    wedged = busy_since is not None and time.monotonic() - busy_since > WEDGED_AFTER_S
+    return {
+        "ok": MODEL is not None and not wedged,
+        "service": "gim",
+        # Named rather than folded into ok, so an operator reading the health
+        # endpoint learns which kind of unhealthy this is.
+        "wedged": wedged,
+    }
 
 
 def _score(area: float) -> int:
@@ -90,7 +122,18 @@ def predict(request: PredictRequest) -> dict:
 
     results = []
     for item, image in zip(request.items, images):
-        prediction = inference_model(MODEL, image).pred_sem_seg.data.cpu()
+        if not MODEL_LOCK.acquire(timeout=LOCK_WAIT_S):
+            raise HTTPException(
+                503,
+                f"GIM did not become free within {LOCK_WAIT_S:.0f}s — it is "
+                "either saturated or wedged; see /health",
+            )
+        _STATE["busy_since"] = time.monotonic()
+        try:
+            prediction = inference_model(MODEL, image).pred_sem_seg.data.cpu()
+        finally:
+            _STATE["busy_since"] = None
+            MODEL_LOCK.release()
 
         keep = np.all((image > BRIGHTNESS_LOW) & (image < BRIGHTNESS_HIGH), axis=-1)
         prediction = prediction * torch.from_numpy(keep[None].astype(np.int64))

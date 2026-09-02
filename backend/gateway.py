@@ -14,6 +14,7 @@ See docs/PROTOCOL.md — that file is the contract, this file implements it.
 
 import asyncio
 import hashlib
+import itertools
 import json
 import shutil
 import subprocess
@@ -300,6 +301,20 @@ async def extract_frames(session: Session) -> None:
 
 def _stride(sampling_fps: float, extract_fps: float) -> int:
     return max(1, round(extract_fps / max(sampling_fps, 1e-6)))
+
+
+# Which instance the next on-demand request goes to.
+#
+# This path used to name config.GIM_URL, the single address, because it was
+# written before there was more than one instance and adding them only changed
+# the scan. That left every on-demand request landing on the first instance
+# while the scan was also using it — two requests into one model, which is
+# exactly what wedges it. The scan and the live page share the instances now.
+_gim_turn = itertools.count()
+
+
+def next_gim_url() -> str:
+    return config.GIM_URLS[next(_gim_turn) % len(config.GIM_URLS)]
 
 
 def is_gim_candidate(frame: FrameRecord) -> bool:
@@ -618,10 +633,24 @@ async def health() -> dict:
     async with httpx.AsyncClient(timeout=2.0) as client:
 
         async def up(url: str) -> bool:
+            """Whether a service is both answering and fit to be asked.
+
+            Answering is not enough. A model that has wedged goes on serving
+            its health endpoint from a spare thread while the thread inside the
+            model never returns, so a check that only looked at the status code
+            called this service healthy for the twenty minutes it spent pinned
+            to the card doing nothing.
+            """
             try:
-                return (await client.get(f"{url}/health")).status_code < 500
+                response = await client.get(f"{url}/health")
             except httpx.RequestError:
                 return False
+            if response.status_code >= 500:
+                return False
+            try:
+                return bool(response.json().get("ok", True))
+            except ValueError:
+                return True
 
         gns, cgi, polyp, *gim = await asyncio.gather(
             up(config.GNS_URL),
@@ -1041,7 +1070,7 @@ async def analyze(session_id: str, request: AnalyzeRequest) -> FrameRecord:
                 masks_dir.mkdir(parents=True, exist_ok=True)
                 mask_out = masks_dir / f"{index + 1:06d}.png"
                 response = await client.post(
-                    f"{config.GIM_URL}/predict",
+                    f"{next_gim_url()}/predict",
                     json={
                         "items": [
                             {

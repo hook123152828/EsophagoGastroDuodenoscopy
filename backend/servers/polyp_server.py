@@ -18,7 +18,10 @@ at ROI resolution — transparent background, tinted polyp pixels — which the
 front-end draws straight over the video.
 """
 
+import os
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
@@ -29,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
@@ -59,6 +62,16 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DETECTOR: Optional[YOLO] = None
 MEDSAM = None
 
+# One thread through the models at a time, for the reason written out in
+# gim_server: a synchronous endpoint runs in a thread pool, and two threads in
+# one model is not safe. Ultralytics is stateful about it too — predict()
+# builds and reuses a predictor hanging off the model object.
+MODEL_LOCK = threading.Lock()
+_STATE = {"busy_since": None}
+
+LOCK_WAIT_S = float(os.getenv("POLYP_LOCK_WAIT_S", "120"))
+WEDGED_AFTER_S = float(os.getenv("POLYP_WEDGED_AFTER_S", "300"))
+
 
 class Item(BaseModel):
     path: str
@@ -86,7 +99,13 @@ def startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": DETECTOR is not None and MEDSAM is not None, "service": "polyp"}
+    busy_since = _STATE["busy_since"]
+    wedged = busy_since is not None and time.monotonic() - busy_since > WEDGED_AFTER_S
+    return {
+        "ok": DETECTOR is not None and MEDSAM is not None and not wedged,
+        "service": "polyp",
+        "wedged": wedged,
+    }
 
 
 def _detect(image: np.ndarray) -> np.ndarray:
@@ -179,13 +198,23 @@ def predict(request: PredictRequest) -> dict:
 
     results = []
     for item, image in zip(request.items, images):
-        boxes = _detect(image)
+        if not MODEL_LOCK.acquire(timeout=LOCK_WAIT_S):
+            raise HTTPException(
+                503,
+                f"Polyp did not become free within {LOCK_WAIT_S:.0f}s — it is "
+                "either saturated or wedged; see /health",
+            )
+        _STATE["busy_since"] = time.monotonic()
+        try:
+            boxes = _detect(image)
+            mask = _segment(image, boxes) if len(boxes) else None
+        finally:
+            _STATE["busy_since"] = None
+            MODEL_LOCK.release()
 
-        if not len(boxes):
+        if mask is None:
             results.append({"boxes": [], "area": 0.0, "has_mask": False})
             continue
-
-        mask = _segment(image, boxes)
         area = float(round(mask.mean() * 100, 2))
 
         # No merge radius: the count is reported on screen, so two polyps a few
