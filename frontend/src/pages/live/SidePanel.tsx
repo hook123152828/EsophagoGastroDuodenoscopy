@@ -17,6 +17,8 @@ interface Props {
   region: RegionId
   /** Regions watched for long enough to count as examined. */
   visited: Set<RegionId>
+  /** White light or narrow band, written onto the site on the diagram. */
+  modality: 'WL' | 'NBI' | null
 }
 
 /**
@@ -28,7 +30,7 @@ interface Props {
  * in the controls column answers a different question: not where the scope is
  * but where it has been.
  */
-export default function SidePanel({ region, visited }: Props) {
+export default function SidePanel({ region, visited, modality }: Props) {
   return (
     <aside className="flex min-w-0 flex-col gap-4 overflow-hidden border-l border-console-line bg-console-panel/40 p-6">
       <p
@@ -39,7 +41,7 @@ export default function SidePanel({ region, visited }: Props) {
       </p>
 
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <AnatomyMap current={region} visited={visited} />
+        <AnatomyMap current={region} visited={visited} modality={modality} />
       </div>
     </aside>
   )

@@ -8,6 +8,7 @@ import {
   gimFrameAt,
   polypFrameAt,
   seenRegions,
+  siteConfidence,
   trackModalityAt,
   trackRegionAt,
   GIM_REGIONS,
@@ -118,6 +119,17 @@ export default function LivePage() {
   // off around a scope that has not gone anywhere.
   const modalityTrack = useMemo(() => buildModalityTrack(frames), [frames])
   const modality = trackModalityAt(modalityTrack, currentTime)
+
+  // The readouts, steadied over a second. The site and the light already have
+  // their own smoothing; these are the numbers beside them.
+  const gnsClass = mode(useRecent(frame?.gns?.class_name ?? null, currentTime))
+  const gnsConfidence = median(
+    useRecent(siteConfidence(frame?.gns), currentTime).filter((v): v is number => v !== null),
+  )
+  const imScore = mode(useRecent(maskFrame?.gim?.score ?? null, currentTime))
+  const imArea = median(
+    useRecent(maskFrame?.gim?.area ?? null, currentTime).filter((v): v is number => v !== null),
+  )
 
   // Regions watched for long enough to count as examined, so the map and the
   // checklist report coverage rather than a glimpse.
@@ -268,12 +280,14 @@ export default function LivePage() {
               </Readout>
 
               <Readout label="GNS">
-                {frame?.gns ? (
+                {gnsClass ? (
                   <>
-                    {frame.gns.class_name}
-                    <span className="ml-1.5 text-console-muted">
-                      {(frame.gns.confidence * 100).toFixed(0)}%
-                    </span>
+                    {gnsClass}
+                    {gnsConfidence !== null && (
+                      <span className="ml-1.5 text-console-muted">
+                        {(gnsConfidence * 100).toFixed(0)}%
+                      </span>
+                    )}
                   </>
                 ) : (
                   '—'
@@ -285,9 +299,10 @@ export default function LivePage() {
                   overlay, which said the same thing twice whenever there was
                   something to show. */}
               <Readout label="IM">
-                {showMask && imEligible && maskFrame?.gim ? (
+                {showMask && imEligible && maskFrame?.gim && imScore !== null ? (
                   <span className="text-im">
-                    score {maskFrame.gim.score} · {maskFrame.gim.area.toFixed(1)}%
+                    score {imScore}
+                    {imArea !== null && ` · ${imArea.toFixed(1)}%`}
                   </span>
                 ) : (
                   <span className="text-console-muted">
@@ -344,7 +359,7 @@ export default function LivePage() {
         </LayoutBlock>
 
         <LayoutBlock id="site" label="Site panel">
-          <SidePanel region={region} visited={visited} />
+          <SidePanel region={region} visited={visited} modality={modality} />
         </LayoutBlock>
 
         <div
@@ -366,6 +381,49 @@ export default function LivePage() {
       </LayoutCanvas>
     </main>
   )
+}
+
+/**
+ * The last second of a value, so a readout is not a slot machine.
+ *
+ * These numbers are recomputed as fast as the playhead moves, and every one of
+ * them comes from a model that decides each frame on its own. Printed straight
+ * through, the digits change several times a second and cannot be read at all
+ * — which is the same reason the site and the light are voted on rather than
+ * taken frame by frame. This is the small version of that: a window, and
+ * whatever is steadiest in it.
+ *
+ * The window is measured in video time rather than wall-clock, so it holds the
+ * same second of the recording however often this renders — and so a seek
+ * empties it instead of leaving the readout on where the scope used to be.
+ */
+function useRecent<T>(value: T, at: number, windowS = 0.9): T[] {
+  const history = useRef<{ at: number; value: T }[]>([])
+  const elapsed = (entry: { at: number }) => at - entry.at
+  history.current = [
+    ...history.current.filter((entry) => elapsed(entry) >= 0 && elapsed(entry) <= windowS),
+    { at, value },
+  ]
+  return history.current.map((entry) => entry.value)
+}
+
+/** The middle of a run of numbers — steady against a single wild frame. */
+function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]
+}
+
+/** Whatever was seen most, for the readouts that are labels rather than sizes. */
+function mode<T>(values: T[]): T | null {
+  if (values.length === 0) return null
+  const counts = new Map<T, number>()
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+  let best = values[0]
+  for (const [value, count] of counts) {
+    if (count > (counts.get(best) ?? 0)) best = value
+  }
+  return best
 }
 
 /** One line of the frame readout: what it is on the left, what it says on the right. */

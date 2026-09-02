@@ -1,4 +1,4 @@
-import { REGION_ORDER, REGION_LABEL, type RegionId } from '@/protocol'
+import { REGION_ORDER, type RegionId, REGION_LABEL } from '@/protocol'
 
 const REGION_COLOR: Record<RegionId, string> = {
   esophagus: 'var(--color-region-esophagus)',
@@ -11,75 +11,118 @@ const REGION_COLOR: Record<RegionId, string> = {
 }
 
 /**
- * The stomach, laid out as in the anatomy plate this diagram was drawn from:
- * the oesophagus entering from the upper left, the cardia where it meets the
- * stomach, the fundus doming up and to the right of it, the greater curvature
- * ballooning down the right, and the antrum tapering left into the pylorus.
+ * The stomach and duodenum, traced from the anatomy plate rather than drawn by
+ * hand: the plate's organ was masked by colour, its outline followed, and the
+ * result fitted through a spline. Drawing it freehand from the picture is what
+ * this did first, and it came out wrong everywhere it mattered — the fundus
+ * short, the greater curvature too shallow, and the duodenum a spiral instead
+ * of a cap turning down into a descending limb.
  *
- * Drawn as a silhouette rather than an outline: the organ is composed of two
- * overlapping shapes, and filling *through the clip* unions them seamlessly.
- * Stroking each sub-shape instead would expose the seam between them.
+ * One closed path, because on the plate it is one silhouette. The oesophagus
+ * runs off the top of the viewBox and the duodenum off the bottom, as they do
+ * there; the spline rounds both cut ends, and the viewBox crops them flat
+ * again.
  */
-const STOMACH =
-  'M70 0 L92 0 ' +
-  'C95 20 99 40 106 54 ' + // oesophagus, leaning right into the cardia
-  'C128 28 166 32 184 66 ' + // fundus, doming up and right of the cardia
-  'C198 92 200 132 192 162 ' + // greater curvature, ballooning right
-  'C184 196 162 220 130 228 ' +
-  'C106 234 80 228 62 208 ' + // antrum, tapering left into the pylorus
-  'C74 196 92 182 110 168 ' + // its upper border, up to the angular incisure
-  'C106 150 96 104 84 66 ' + // lesser curvature, concave
-  'C80 52 74 26 70 8 Z'
-
-/** Pyloric ring and duodenal cap — the C hooking down at the bottom left. */
-const DUODENUM =
-  'M74 202 C46 194 20 206 14 226 C8 248 24 264 44 260 ' +
-  'C56 258 62 248 58 238 C55 230 44 230 42 239 ' +
-  'C40 247 30 246 28 236 C25 220 42 210 68 214 Z'
+const ORGAN =
+  'M186.2 52.1 C183.9 49.1 182.2 47.6 179.7 45.6 C177.2 43.6 173.9 41.6 171.1 ' +
+  '40.2 C168.2 38.9 166.1 38.1 162.5 37.5 C158.9 37.0 154.0 36.3 149.5 37.0 ' +
+  'C145.1 37.7 140.7 38.1 135.5 41.8 C130.4 45.6 123.1 56.7 118.8 59.6 C114.6 ' +
+  '62.6 112.6 60.6 110.2 59.6 C107.9 58.6 106.2 56.5 104.8 53.7 C103.5 50.9 ' +
+  '102.8 51.5 102.2 42.9 C101.5 34.3 105.4 8.8 101.1 2.0 C96.8 -4.8 80.4 -5.3 ' +
+  '76.3 2.0 C72.2 9.3 75.8 36.1 76.3 45.6 C76.8 55.1 77.4 54.7 79.5 59.1 C81.7 ' +
+  '63.5 83.6 68.0 89.2 72.0 C94.9 76.0 109.0 80.3 113.5 83.3 C117.9 86.3 115.7 ' +
+  '86.8 116.2 89.8 C116.6 92.7 116.5 97.8 116.2 101.1 C115.8 104.3 115.3 106.4 ' +
+  '114.0 109.2 C112.7 111.9 110.7 115.3 108.6 117.8 C106.6 120.2 107.5 121.7 ' +
+  '101.6 123.7 C95.7 125.7 79.1 127.8 73.1 129.6 C67.1 131.4 68.8 131.7 65.5 ' +
+  '134.5 C62.3 137.2 56.7 144.3 53.7 146.3 C50.7 148.3 49.9 147.1 47.8 146.3 ' +
+  'C45.6 145.5 42.9 142.5 40.8 141.5 C38.6 140.4 36.7 140.0 34.8 139.8 C33.0 ' +
+  '139.7 31.8 139.2 29.5 140.4 C27.1 141.6 22.6 144.5 20.8 146.8 C19.1 149.2 ' +
+  '20.4 152.7 18.7 154.4 C17.0 156.1 13.0 155.2 10.6 157.1 C8.2 159.0 5.6 162.5 ' +
+  '4.2 165.7 C2.7 168.9 2.4 169.7 2.0 176.5 C1.6 183.2 -1.1 201.1 2.0 206.1 ' +
+  'C5.1 211.1 17.2 211.0 20.3 206.6 C23.4 202.2 20.4 185.3 20.8 179.7 C21.3 ' +
+  '174.0 22.3 174.3 23.0 172.7 C23.7 171.1 22.2 170.5 25.2 170.0 C28.1 169.5 ' +
+  '36.7 171.0 40.8 169.5 C44.8 167.9 46.8 162.0 49.4 160.8 C52.0 159.7 53.1 ' +
+  '159.9 56.4 162.5 C59.7 165.1 65.2 172.9 69.3 176.5 C73.4 180.1 77.4 182.3 ' +
+  '81.2 184.0 C84.9 185.7 87.8 186.2 91.9 186.7 C96.1 187.1 101.3 187.1 105.9 ' +
+  '186.7 C110.5 186.2 114.3 185.5 119.4 184.0 C124.5 182.5 131.3 179.9 136.6 ' +
+  '177.5 C141.9 175.2 146.2 173.1 151.2 170.0 C156.1 166.9 160.9 164.3 166.2 ' +
+  '159.2 C171.5 154.1 179.0 145.1 182.9 139.3 C186.9 133.5 187.8 130.5 189.9 ' +
+  '124.2 C192.1 117.9 194.6 107.4 195.8 101.6 C197.1 95.9 197.3 94.0 197.5 89.8 ' +
+  'C197.6 85.6 197.6 80.7 196.9 76.3 C196.2 71.9 194.9 67.4 193.2 63.4 C191.4 ' +
+  '59.3 188.4 55.0 186.2 52.1 Z'
 
 /**
  * Region slabs, drawn clipped to the silhouette.
  *
- * They tile the viewBox without overlapping, so the clip decides each region's
- * shape. The oesophagus slab is bounded on the right and the duodenum on the
- * right of the pylorus, because both sit beside the stomach rather than above
- * or below it — banding the whole diagram horizontally would colour the fundus
- * as oesophagus and the duodenal cap as antrum.
+ * They tile the plane without overlapping, so the clip decides each region's
+ * shape. The two boundaries the plate draws are the ones it uses: a nearly
+ * level line off the cardia cutting the fundus from the body, and a steep one
+ * dropping from the lesser curvature that puts the antrum to its left. The
+ * plate marks the angular incisure with an arrow rather than a region, so the
+ * incisure gets a band of its own alongside the antrum's boundary — it is a
+ * site the classifier reports, and a site with no area on the map cannot be
+ * shown.
+ *
+ * The oesophagus is cut off above the cardia and the duodenum to the left of
+ * the pyloric channel, because both sit beside the stomach rather than above
+ * or below it.
  */
 const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
-  esophagus: 'M0 0 H106 V54 H0 Z',
-  cardia: 'M106 0 H200 V100 H106 Z M0 54 H106 V100 H0 Z',
-  body: 'M0 100 H200 V150 H0 Z',
-  angle: 'M0 150 H200 V176 H0 Z',
-  antrum: 'M62 176 H200 V260 H62 Z',
-  duodenum: 'M0 176 H62 V260 H0 Z',
+  esophagus: 'M31 -20 L40 37 H220 V-20 Z',
+  cardia: 'M40 37 H220 V80.5 L47.9 93.4 Z',
+  body: 'M135 87 L220 80.5 V230 L147.8 230 L126.6 183 Z',
+  angle: 'M84.9 90.6 L135 87 L126.6 183 Z',
+  antrum: 'M47.9 93.4 L84.9 90.6 L147.8 230 L68 230 Z',
+  duodenum: 'M31 -20 L68 230 H-20 V-20 Z',
+}
+
+/**
+ * Where each region's badge sits — inside the region, clear of the outline.
+ * Hand-placed rather than derived: a slab is a half-plane, and its centre is
+ * nowhere near the part of it the silhouette keeps.
+ */
+const BADGE_AT: Record<RegionId, [number, number]> = {
+  esophagus: [88, 22],
+  cardia: [152, 62],
+  body: [150, 120],
+  angle: [122, 135],
+  antrum: [86, 152],
+  duodenum: [27, 160],
+  unknown: [150, 120],
 }
 
 interface Props {
   current: RegionId
   /** Regions already seen in this procedure — the coverage checklist. */
   visited: Set<RegionId>
+  /** White light or narrow band, written onto the site it was seen under. */
+  modality: 'WL' | 'NBI' | null
 }
 
-export default function AnatomyMap({ current, visited }: Props) {
+export default function AnatomyMap({ current, visited, modality }: Props) {
+  const [badgeX, badgeY] = BADGE_AT[current]
+
   return (
     <svg
-      viewBox="0 0 200 260"
+      viewBox="0 2 200 205"
       className="h-full max-h-full w-full"
       preserveAspectRatio="xMidYMid meet"
       role="img"
-      aria-label={`Examination site: ${REGION_LABEL[current]}`}
+      aria-label={
+        modality
+          ? `Examination site: ${REGION_LABEL[current]}, under ${modality}`
+          : `Examination site: ${REGION_LABEL[current]}`
+      }
     >
       <defs>
         <clipPath id="gi-outline">
-          <path d={STOMACH} />
-          <path d={DUODENUM} />
+          <path d={ORGAN} />
         </clipPath>
       </defs>
 
       <g clipPath="url(#gi-outline)">
         {/* Unlit organ, so the shape reads even where nothing has been seen. */}
-        <rect x="0" y="0" width="200" height="260" fill="var(--color-console-line)" />
+        <rect x="-20" y="-20" width="240" height="250" fill="var(--color-console-line)" />
         {REGION_ORDER.map((region) => {
           const isCurrent = region === current
           return (
@@ -87,12 +130,70 @@ export default function AnatomyMap({ current, visited }: Props) {
               key={region}
               d={REGION_SLAB[region as Exclude<RegionId, 'unknown'>]}
               fill={REGION_COLOR[region]}
-              fillOpacity={isCurrent ? 0.95 : visited.has(region) ? 0.28 : 0}
+              fillOpacity={isCurrent ? 0.85 : visited.has(region) ? 0.24 : 0}
               className="transition-opacity duration-300"
             />
           )
         })}
+
+        {/* The divisions, dashed as they are on the plate. Without them an
+            unvisited stomach is one dark shape and the diagram says nothing
+            until a site lights up; with them it is a map the whole time. */}
+        {REGION_ORDER.map((region) => (
+          <path
+            key={region}
+            d={REGION_SLAB[region as Exclude<RegionId, 'unknown'>]}
+            fill="none"
+            stroke="var(--color-console-muted)"
+            strokeOpacity={0.55}
+            strokeWidth={1}
+            strokeDasharray="4 4"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
       </g>
+
+      {/* Drawn last, over both: the silhouette is the one line that has to
+          survive whatever is filled underneath it. */}
+      <path
+        d={ORGAN}
+        fill="none"
+        stroke="var(--color-console-muted)"
+        strokeWidth={1.75}
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+
+      {/* The light source, on the site it is lighting. Outside the clip: a
+          badge the silhouette could cut in half would be worse than no badge,
+          and the anchors sit close to the outline in the oesophagus and at the
+          duodenal cap. */}
+      {modality && (
+        <g
+          className="transition-transform duration-300"
+          transform={`translate(${badgeX} ${badgeY})`}
+        >
+          <rect
+            x={-13}
+            y={-7}
+            width={26}
+            height={14}
+            rx={7}
+            fill="var(--color-console-bg)"
+            fillOpacity={0.86}
+          />
+          <text
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={8}
+            fontWeight={600}
+            letterSpacing={0.5}
+            fill={modality === 'NBI' ? 'var(--color-scope-accent)' : 'var(--color-console-text)'}
+          >
+            {modality}
+          </text>
+        </g>
+      )}
     </svg>
   )
 }
