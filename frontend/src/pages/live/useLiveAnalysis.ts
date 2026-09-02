@@ -4,6 +4,7 @@ import {
   analyzeFrame,
   frameAt,
   gimApplies,
+  gimScannedAt,
   polypApplies,
   type FrameRecord,
 } from '@/protocol'
@@ -40,6 +41,16 @@ export interface LiveAnalysis {
  * site but no mask, and asking for it here is the only thing that puts a mask
  * on screen before that pass arrives.
  *
+ * What counts as covered is a GIM result *near* this frame, not one on it. The
+ * scan samples GIM at a fraction of the extract rate, so most frames will
+ * never carry one however long it runs -- and asking each of them for a pass
+ * of its own meant the live analyser fired forever on a finished session, on
+ * every other frame, feeding single-frame results into a readout that is
+ * otherwise decided by consensus over a window. That is what made the IM cell
+ * alternate between a score and no finding. The window is the one the display
+ * reads on, so the rule is exactly: fire when the display would otherwise say
+ * the frame was never scanned.
+ *
  * Stricter than the gateway's own rule, which is NBI alone: a mask outside the
  * stomach would not be shown, so there is no reason to spend the GPU on it.
  *
@@ -49,9 +60,13 @@ export interface LiveAnalysis {
  * as well is what stops a frame the model is undefined on — anything under NBI
  * — from being asked for on every tick and never being satisfied.
  */
-function pending(frame: FrameRecord, wantPolyp: boolean): boolean {
+function pending(
+  frames: FrameRecord[],
+  frame: FrameRecord,
+  wantPolyp: boolean,
+): boolean {
   if (!frame.gns) return true
-  if (gimApplies(frame.gns) && !frame.gim) return true
+  if (gimApplies(frame.gns) && !gimScannedAt(frames, frame.t)) return true
   return wantPolyp && polypApplies(frame.gns) && !frame.polyp
 }
 
@@ -101,7 +116,7 @@ export function useLiveAnalysis(
       const time = video.currentTime
       const cached = frameAt(framesRef.current, time)
 
-      if (cached && !pending(cached, wantPolyp)) {
+      if (cached && !pending(framesRef.current, cached, wantPolyp)) {
         // The scan covers this timestamp. Drop the on-demand record at once so
         // the display never shows a result for a different frame, but let the
         // indicator fade on its own.

@@ -92,6 +92,30 @@ function imConfirmed(frames: FrameRecord[], index: number): boolean {
  * video1.mp4 it turns 30 appearances into 16, and the ones it removes are the
  * single-frame flashes.
  */
+/**
+ * Whether IM has been run anywhere near this moment.
+ *
+ * Not the same question as whether *this* frame carries a GIM result. GIM is
+ * sampled at a fraction of the extract rate, so most frames do not carry one,
+ * and asking the nearest single frame makes the answer alternate as fast as
+ * the playhead crosses frames -- which is exactly what the IM readout used to
+ * do, flipping between "no finding" and "not scanned" about ten times a
+ * second. The window is the one the rest of the IM display already runs on.
+ */
+export function gimScannedAt(
+  frames: FrameRecord[],
+  time: number,
+  maxAge = IM_HOLD_S,
+): boolean {
+  const current = frameAt(frames, time)
+  if (!current) return false
+
+  for (let i = current.index; i >= 0 && current.t - frames[i].t <= maxAge; i--) {
+    if (frames[i].gim) return true
+  }
+  return false
+}
+
 export function gimFrameAt(
   frames: FrameRecord[],
   time: number,

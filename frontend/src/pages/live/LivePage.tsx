@@ -6,6 +6,7 @@ import {
   buildRegionTrack,
   frameAt,
   gimFrameAt,
+  gimScannedAt,
   polypFrameAt,
   seenRegions,
   siteConfidence,
@@ -100,7 +101,12 @@ export default function LivePage() {
     () => gimFrameAt(frames, currentTime),
     [frames, currentTime],
   )
-  const maskFrame = live.frame?.gim ? live.frame : cachedMask
+  // A GIM pass that found nothing still comes back with a `gim` record —
+  // score 0, no mask. Taking that as the frame to display put "score 0 · 0.0%"
+  // in the IM readout, which is what the cached path has always refused to do:
+  // it wants a mask, and a consensus of them. The live path cannot have the
+  // consensus, since it is one frame, but it can want the mask.
+  const maskFrame = live.frame?.gim?.mask_url ? live.frame : cachedMask
 
   const cachedPolyp = useMemo(
     () => polypFrameAt(frames, currentTime),
@@ -123,13 +129,9 @@ export default function LivePage() {
   // The readouts, steadied over a second. The site and the light already have
   // their own smoothing; these are the numbers beside them.
   const gnsClass = mode(useRecent(frame?.gns?.class_name ?? null, currentTime))
-  const gnsConfidence = median(
-    useRecent(siteConfidence(frame?.gns), currentTime).filter((v): v is number => v !== null),
-  )
-  const imScore = mode(useRecent(maskFrame?.gim?.score ?? null, currentTime))
-  const imArea = median(
-    useRecent(maskFrame?.gim?.area ?? null, currentTime).filter((v): v is number => v !== null),
-  )
+  const gnsConfidence = median(present(useRecent(siteConfidence(frame?.gns), currentTime)))
+  const imScore = mode(present(useRecent(maskFrame?.gim?.score ?? null, currentTime)))
+  const imArea = median(present(useRecent(maskFrame?.gim?.area ?? null, currentTime)))
 
   // Regions watched for long enough to count as examined, so the map and the
   // checklist report coverage rather than a glimpse.
@@ -165,6 +167,10 @@ export default function LivePage() {
   // site comes from the smoothed track rather than the frame, so a single
   // stray classification cannot blink the overlay off mid-examination.
   const imEligible = modality === 'NBI' && GIM_REGIONS.includes(region)
+  // Not memoised, and it sits below the early returns: a binary search and at
+  // most a scan of the hold window, which is cheaper than the hook it would
+  // take to cache it.
+  const imScanned = gimScannedAt(frames, currentTime)
   // The detector was fine-tuned on white-light stomach, so the overlay is
   // offered there and nowhere else — the mirror of the IM rule.
   const polypEligible = modality === 'WL' && POLYP_REGIONS.includes(region)
@@ -299,9 +305,9 @@ export default function LivePage() {
                   overlay, which said the same thing twice whenever there was
                   something to show. */}
               <Readout label="IM">
-                {showMask && imEligible && maskFrame?.gim && imScore !== null ? (
+                {showMask && imEligible && maskFrame?.gim ? (
                   <span className="text-im">
-                    score {imScore}
+                    score {imScore ?? maskFrame.gim.score}
                     {imArea !== null && ` · ${imArea.toFixed(1)}%`}
                   </span>
                 ) : (
@@ -310,7 +316,7 @@ export default function LivePage() {
                       ? 'off'
                       : !imEligible
                         ? 'gastric NBI only'
-                        : frame?.gim
+                        : imScanned
                           ? 'no finding'
                           : 'not scanned'}
                   </span>
@@ -405,6 +411,11 @@ function useRecent<T>(value: T, at: number, windowS = 0.9): T[] {
     { at, value },
   ]
   return history.current.map((entry) => entry.value)
+}
+
+/** Drop the gaps: a window spans moments the models did not all report on. */
+function present<T>(values: (T | null)[]): T[] {
+  return values.filter((value): value is T => value !== null)
 }
 
 /** The middle of a run of numbers — steady against a single wild frame. */
