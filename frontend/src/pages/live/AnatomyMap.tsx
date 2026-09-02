@@ -77,10 +77,10 @@ const ORGAN =
  */
 const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
   esophagus: 'M37.9 26 H220 V-20 H31 Z',
-  cardia: 'M37.9 26 H220 V74.8 L41.4 49.9 Z',
-  body: 'M78.2 55 L220 74.8 V240 L152.2 240 L132 190 L129 122 L105 122 Z',
+  cardia: 'M37.9 26 H220 V72.1 L49.9 107.1 Z',
+  body: 'M95.3 97.8 L220 72.1 V240 L152.2 240 L132 190 L129 122 L105 122 Z',
   angle: 'M105 122 L129 122 L132 190 Z',
-  antrum: 'M78.2 55 L152.2 240 H69.7 L41.4 49.9 Z',
+  antrum: 'M95.3 97.8 L152.2 240 H69.7 L49.9 107.1 Z',
   duodenum: 'M31 -20 L69.7 240 H-20 V-20 Z',
 }
 
@@ -91,7 +91,7 @@ const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
  */
 const BADGE_AT: Record<RegionId, [number, number]> = {
   esophagus: [89, 14],
-  cardia: [155, 50],
+  cardia: [152, 58],
   body: [158, 118],
   angle: [123, 148],
   antrum: [88, 152],
