@@ -62,7 +62,11 @@ const ORGAN =
  *
  *   oesophagus | cardia   x = 149.9 - 0.8y    (down the tube, not across it:
  *                          the cardia is the pocket at the bend, not a band)
- *   cardia+fundus | body  y = 81.25 - 0.1x    (just under the dome)
+ *   cardia+fundus | body  y = 81.25 - 0.1x  as far as x = 119.6, then straight
+ *                          down to y = 88. The proximal region is not bounded
+ *                          by one line: the fundus ends under the dome, and
+ *                          the cardia carries on down the lesser curvature
+ *                          past it, tapering out where the wall meets x=119.6.
  *   antrum | angle        x = 48.83 + 0.233y
  *   angle | body          x = 42.9 + 0.525y   (through the angular incisure)
  *   antrum | duodenum     x = 34 + 0.1488y    (the pyloric channel)
@@ -72,11 +76,11 @@ const ORGAN =
  * lesser curvature.
  */
 const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
-  esophagus: 'M31 -20 H165.9 L92.3 72 L45.4 76.7 Z',
-  cardia: 'M92.3 72 L165.9 -20 H220 V59.25 Z',
-  body: 'M81.3 73.1 L220 59.25 V240 L168.9 240 Z',
-  angle: 'M66.2 74.6 L81.3 73.1 L168.9 240 H104.8 Z',
-  antrum: 'M45.4 76.7 L66.2 74.6 L104.8 240 H69.7 Z',
+  esophagus: 'M31 -20 H165.9 L52.2 122.2 Z',
+  cardia: 'M165.9 -20 H220 V59.25 L119.6 69.3 V88 H79.5 Z',
+  body: 'M89.1 88 H119.6 V69.3 L220 59.25 V240 L168.9 240 Z',
+  angle: 'M79.5 88 H89.1 L168.9 240 H104.8 L71.6 97.8 Z',
+  antrum: 'M71.6 97.8 L104.8 240 H69.7 L52.2 122.2 Z',
   duodenum: 'M31 -20 L69.7 240 H-20 V-20 Z',
 }
 
