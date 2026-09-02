@@ -55,25 +55,33 @@ const ORGAN =
  * Region slabs, drawn clipped to the silhouette.
  *
  * They tile the plane without overlapping, so the clip decides each region's
- * shape. The two boundaries the plate draws are the ones it uses: a nearly
- * level line off the cardia cutting the fundus from the body, and a steep one
- * dropping from the lesser curvature that puts the antrum to its left. The
- * plate marks the angular incisure with an arrow rather than a region, so the
- * incisure gets a band of its own alongside the antrum's boundary — it is a
- * site the classifier reports, and a site with no area on the map cannot be
- * shown.
+ * shape, and every boundary is taken off the plate rather than guessed:
+ *
+ *  - The cardia and fundus end on a line through the *cardial notch* — the V
+ *    between the oesophagus and the dome. On the plate the fundus is only that
+ *    dome and the cardia only the collar below it; the lesser curvature under
+ *    them is body all the way down. Cutting level with the middle of the organ
+ *    instead, which is what this did first, handed the fundus most of the body.
+ *  - The antrum begins at the *angular incisure*, the corner where the lesser
+ *    curvature stops descending and turns for the pylorus. On the traced
+ *    outline that corner is at (105, 122), and the antrum's boundary is the
+ *    line through it.
+ *  - The incisure is a corner on the plate, not a region, but it is a site the
+ *    classifier reports, so it gets a wedge along that boundary — widest at
+ *    the corner it is named for and closing as it runs away from it. A site
+ *    with no area on the map cannot be shown.
  *
  * The oesophagus is cut off above the cardia and the duodenum to the left of
  * the pyloric channel, because both sit beside the stomach rather than above
  * or below it.
  */
 const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
-  esophagus: 'M31 -20 L40 37 H220 V-20 Z',
-  cardia: 'M40 37 H220 V80.5 L47.9 93.4 Z',
-  body: 'M135 87 L220 80.5 V230 L147.8 230 L126.6 183 Z',
-  angle: 'M84.9 90.6 L135 87 L126.6 183 Z',
-  antrum: 'M47.9 93.4 L84.9 90.6 L147.8 230 L68 230 Z',
-  duodenum: 'M31 -20 L68 230 H-20 V-20 Z',
+  esophagus: 'M37.9 26 H220 V-20 H31 Z',
+  cardia: 'M37.9 26 H220 V74.8 L41.4 49.9 Z',
+  body: 'M78.2 55 L220 74.8 V240 L152.2 240 L132 190 L129 122 L105 122 Z',
+  angle: 'M105 122 L129 122 L132 190 Z',
+  antrum: 'M78.2 55 L152.2 240 H69.7 L41.4 49.9 Z',
+  duodenum: 'M31 -20 L69.7 240 H-20 V-20 Z',
 }
 
 /**
@@ -82,13 +90,13 @@ const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
  * nowhere near the part of it the silhouette keeps.
  */
 const BADGE_AT: Record<RegionId, [number, number]> = {
-  esophagus: [88, 22],
-  cardia: [152, 62],
-  body: [150, 120],
-  angle: [122, 135],
-  antrum: [86, 152],
+  esophagus: [89, 14],
+  cardia: [155, 50],
+  body: [158, 118],
+  angle: [123, 148],
+  antrum: [88, 152],
   duodenum: [27, 160],
-  unknown: [150, 120],
+  unknown: [158, 118],
 }
 
 interface Props {
