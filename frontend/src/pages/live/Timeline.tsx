@@ -53,8 +53,14 @@ function scannedTo(frames: FrameRecord[]): number {
 }
 
 /**
- * The procedure at a glance: which region the scope was in, and where IM was
- * flagged. Click to seek.
+ * The procedure at a glance: which region the scope was in. Click to seek.
+ *
+ * The bar carries sites and nothing else. IM used to be drawn onto it as a
+ * mark per positive frame, straight off the model — no corroboration, unlike
+ * the overlay, which needs two of three frames to agree. The two disagreed
+ * often enough to read as a fault: a mark on the bar, nothing on the picture
+ * when you seeked to it. The count below still says how many frames were
+ * flagged.
  *
  * The axis spans what has been scanned, not the whole video: a procedure that
  * has just been loaded has nothing to show and says so by being empty, rather
@@ -100,15 +106,6 @@ export default function Timeline({
               background: REGION_COLOR[span.region],
               opacity: 0.55,
             }}
-          />
-        ))}
-
-        {findings.map((frame) => (
-          <div
-            key={frame.index}
-            className="absolute inset-y-0 w-0.5 bg-im"
-            style={{ left: percent(frame.t) }}
-            title={`IM score ${frame.gim!.score}`}
           />
         ))}
 
