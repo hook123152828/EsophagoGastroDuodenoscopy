@@ -55,34 +55,37 @@ const ORGAN =
  * Region slabs, drawn clipped to the silhouette.
  *
  * They tile the plane without overlapping, so the clip decides each region's
- * shape, and every boundary is taken off the plate rather than guessed:
+ * shape. Every boundary here was measured off a marked-up screenshot rather
+ * than judged by eye: the drawing was registered to this viewBox by fitting
+ * its silhouette against the traced one, and each stroke read back in these
+ * coordinates. The five lines, as x = f(y) or y = f(x):
  *
- *  - The cardia and fundus end on a line through the *cardial notch* — the V
- *    between the oesophagus and the dome. On the plate the fundus is only that
- *    dome and the cardia only the collar below it; the lesser curvature under
- *    them is body all the way down. Cutting level with the middle of the organ
- *    instead, which is what this did first, handed the fundus most of the body.
- *  - The antrum begins at the *angular incisure*, the corner where the lesser
- *    curvature stops descending and turns for the pylorus. On the traced
- *    outline that corner is at (105, 122), and the antrum's boundary is the
- *    line through it.
- *  - The incisure is a corner on the plate, not a region, but it is a site the
- *    classifier reports, so it gets a wedge along that boundary — widest at
- *    the corner it is named for and closing as it runs away from it. A site
- *    with no area on the map cannot be shown.
+ *   oesophagus | cardia   x = 149.9 - 0.8y    (down the tube, not across it:
+ *                          the cardia is the pocket at the bend, not a band)
+ *   cardia+fundus | body  y = 81.25 - 0.1x    (just under the dome)
+ *   antrum | angle        x = 48.83 + 0.233y
+ *   angle | body          x = 42.9 + 0.525y   (through the angular incisure)
+ *   antrum | duodenum     x = 34 + 0.1488y    (the pyloric channel)
  *
- * The oesophagus is cut off above the cardia and the duodenum to the left of
- * the pyloric channel, because both sit beside the stomach rather than above
- * or below it.
+ * The last two open away from each other going distally, which is what makes
+ * the angle a band across the stomach -- 胃角部 -- rather than a sliver on the
+ * lesser curvature.
  */
 const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
-  esophagus: 'M37.9 26 H220 V-20 H31 Z',
-  cardia: 'M37.9 26 H220 V72.1 L49.9 107.1 Z',
-  body: 'M95.3 97.8 L220 72.1 V240 L152.2 240 Z',
-  angle: 'M75 102 L95.3 97.8 L152.2 240 H130.2 Z',
-  antrum: 'M75 102 L130.2 240 H69.7 L49.9 107.1 Z',
+  esophagus: 'M31 -20 H165.9 L92.3 72 L45.4 76.7 Z',
+  cardia: 'M92.3 72 L165.9 -20 H220 V59.25 Z',
+  body: 'M81.3 73.1 L220 59.25 V240 L168.9 240 Z',
+  angle: 'M66.2 74.6 L81.3 73.1 L168.9 240 H104.8 Z',
+  antrum: 'M45.4 76.7 L66.2 74.6 L104.8 240 H69.7 Z',
   duodenum: 'M31 -20 L69.7 240 H-20 V-20 Z',
 }
+
+/**
+ * Cardia and fundus, which the plates separate and this map does not: GNS has
+ * one class for the proximal stomach, so both sides of this line light up
+ * together and it is drawn for orientation only.
+ */
+const CARDIA_FUNDUS = 'M119.6 37.9 V69.3'
 
 /**
  * Where each region's badge sits — inside the region, clear of the outline.
@@ -90,13 +93,13 @@ const REGION_SLAB: Record<Exclude<RegionId, 'unknown'>, string> = {
  * nowhere near the part of it the silhouette keeps.
  */
 const BADGE_AT: Record<RegionId, [number, number]> = {
-  esophagus: [89, 14],
-  cardia: [152, 58],
-  body: [158, 118],
-  angle: [109, 158],
-  antrum: [77, 155],
+  esophagus: [89, 25],
+  cardia: [150, 48],
+  body: [152, 110],
+  angle: [106, 158],
+  antrum: [72, 158],
   duodenum: [27, 160],
-  unknown: [158, 118],
+  unknown: [152, 110],
 }
 
 interface Props {
@@ -159,6 +162,15 @@ export default function AnatomyMap({ current, visited, modality }: Props) {
             vectorEffect="non-scaling-stroke"
           />
         ))}
+        <path
+          d={CARDIA_FUNDUS}
+          fill="none"
+          stroke="var(--color-console-muted)"
+          strokeOpacity={0.55}
+          strokeWidth={1}
+          strokeDasharray="4 4"
+          vectorEffect="non-scaling-stroke"
+        />
       </g>
 
       {/* Drawn last, over both: the silhouette is the one line that has to
