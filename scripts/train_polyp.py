@@ -136,6 +136,27 @@ def build_dataset() -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="yolo11n.pt", help="pretrained baseline")
+    parser.add_argument(
+        "--name",
+        default="polyp",
+        help="run directory under Polyp/runs. Comparing baselines needs one "
+        "each, and they must not be the deployed run: it is written with "
+        "exist_ok, so training over it destroys the record of what is live.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue an interrupted run from its last.pt, keeping its own "
+        "arguments. Everything else on the command line is then ignored, "
+        "which is Ultralytics' rule, not ours.",
+    )
+    parser.add_argument(
+        "--deploy",
+        action="store_true",
+        help="copy the run's best.pt over the weights the service loads. Off "
+        "by default: a run is not necessarily an improvement, and the "
+        "incumbent is the only copy of the last one that was.",
+    )
     parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--imgsz", type=int, default=640)
     # The 4090 is shared with the other model services, so the default stays
@@ -147,33 +168,49 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    yaml_path = build_dataset()
-    if args.dataset_only:
-        return
+    run = POLYP_ROOT / "runs" / args.name
 
-    from ultralytics import YOLO
+    if args.resume:
+        # The split is a pure function of SEED, so it is already on disk and
+        # rebuilding it would only risk pulling files out from under a run
+        # that is about to read them.
+        last = run / "weights" / "last.pt"
+        if not last.exists():
+            sys.exit(f"!! nothing to resume: {last} does not exist")
+        from ultralytics import YOLO
 
-    model = YOLO(args.model)
-    model.train(
-        data=str(yaml_path),
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        device=args.device,
-        project=str(POLYP_ROOT / "runs"),
-        name="polyp",
-        exist_ok=True,
-        # The dataset already carries a vertical flip of every image; letting
-        # Ultralytics add its own would just repeat it.
-        flipud=0.0,
-        patience=30,
-        seed=SEED,
-    )
+        print(f"   resuming {args.name} from {last}")
+        YOLO(str(last)).train(resume=True)
+    else:
+        yaml_path = build_dataset()
+        if args.dataset_only:
+            return
 
-    best = POLYP_ROOT / "runs" / "polyp" / "weights" / "best.pt"
-    WEIGHT_OUT.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best, WEIGHT_OUT)
-    print(f"\n   detector written to {WEIGHT_OUT}")
+        from ultralytics import YOLO
+
+        YOLO(args.model).train(
+            data=str(yaml_path),
+            epochs=args.epochs,
+            imgsz=args.imgsz,
+            batch=args.batch,
+            device=args.device,
+            project=str(POLYP_ROOT / "runs"),
+            name=args.name,
+            exist_ok=True,
+            # The dataset already carries a vertical flip of every image;
+            # letting Ultralytics add its own would just repeat it.
+            flipud=0.0,
+            patience=30,
+            seed=SEED,
+        )
+
+    best = run / "weights" / "best.pt"
+    if args.deploy:
+        WEIGHT_OUT.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(best, WEIGHT_OUT)
+        print(f"\n   detector written to {WEIGHT_OUT}")
+    else:
+        print(f"\n   best weights at {best} (not deployed; pass --deploy)")
 
 
 if __name__ == "__main__":
