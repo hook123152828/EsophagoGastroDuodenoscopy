@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 
 import {
   MASK_BOUNDARY_FILTER,
@@ -150,30 +150,142 @@ export default function ScopeStage({
 
         {(maskVisible || polypVisible) && <MaskBoundaryFilter />}
 
-        {maskVisible && (
-          <img
-            src={fileUrl(maskFrame!.gim!.mask_url!)}
-            alt=""
-            style={{ filter: MASK_BOUNDARY_FILTER }}
-            className="pointer-events-none absolute inset-0 h-full w-full"
-          />
-        )}
+        {maskVisible && <SlidingMask src={fileUrl(maskFrame!.gim!.mask_url!)} />}
 
         {/* Drawn over the IM outline: where both models fire on the same
             mucosa, the discrete finding is the one to keep legible. */}
-        {polypVisible && (
-          <img
-            src={fileUrl(polyp!.mask_url!)}
-            alt=""
-            style={{ filter: MASK_BOUNDARY_FILTER }}
-            className="pointer-events-none absolute inset-0 h-full w-full"
-          />
-        )}
+        {polypVisible && <SlidingMask src={fileUrl(polyp!.mask_url!)} />}
 
         {alerting && <CornerBrackets />}
 
       </div>
     </div>
+  )
+}
+
+/** How far a mask may travel between passes and still be the same lesion. */
+const SAME_LESION = 0.25
+
+/**
+ * Long enough to read as movement, short enough to finish first.
+ *
+ * Masks arrive as fast as the pass that made them -- one every 67ms at GIM's
+ * sampling rate -- and a slide that outlasts the gap never arrives: the
+ * outline is released towards one position, interrupted by the next mask, and
+ * sits permanently short of wherever the lesion actually is. The overlay is
+ * already up to half a second behind the mucosa and the animation must not add
+ * to that, so it is set under the shortest gap rather than to whatever looks
+ * smoothest on its own. At 60fps it is still four frames of travel, which is
+ * movement to the eye and a cut is not.
+ */
+const SLIDE_MS = 60
+
+/**
+ * The centroid of a mask's opaque pixels, as fractions of the frame.
+ *
+ * Cached: the same mask is shown again on every scrub back over it, and the
+ * answer is a property of the file.
+ */
+const CENTROIDS = new Map<string, [number, number] | null>()
+
+async function centroidOf(src: string): Promise<[number, number] | null> {
+  const cached = CENTROIDS.get(src)
+  if (cached !== undefined) return cached
+
+  const image = new Image()
+  image.src = src
+  try {
+    await image.decode()
+  } catch {
+    return null
+  }
+
+  // Small: the centroid of a blob does not need the blob's resolution, and
+  // this runs on every mask the scan produces.
+  const size = 48
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) return null
+  context.drawImage(image, 0, 0, size, size)
+  const { data } = context.getImageData(0, 0, size, size)
+
+  let weight = 0
+  let x = 0
+  let y = 0
+  for (let i = 0; i < size * size; i++) {
+    const alpha = data[i * 4 + 3]
+    if (alpha === 0) continue
+    weight += alpha
+    x += (i % size) * alpha
+    y += Math.floor(i / size) * alpha
+  }
+  const centroid: [number, number] | null =
+    weight === 0 ? null : [x / weight / size, y / weight / size]
+  CENTROIDS.set(src, centroid)
+  return centroid
+}
+
+/**
+ * A mask that slides to where the lesion has moved instead of jumping there.
+ *
+ * The masks are computed at a fraction of the video's rate and held until the
+ * next one, so an outline is always a little behind the mucosa under it and
+ * catches up in one step. Cutting between two positions several times a second
+ * reads as flicker, and the eye loses which of the two is the finding.
+ *
+ * So each new mask is placed where the last one was and moved into position.
+ * The offset is the shift between their centroids, measured off the images
+ * themselves — the protocol carries a mask's area and score but not where it
+ * is. A mask that lands more than a quarter of the frame away is not the same
+ * lesion having moved, so it appears where it is.
+ *
+ * The two positions are written straight to the node with a reflow between
+ * them, rather than through state. Going through state costs a render for the
+ * offset, a frame for the callback that clears it, and a render for the zero —
+ * about 48ms before the outline starts moving, against a 64ms median gap
+ * between masks. The overlay spent most of its life parked where the lesion
+ * used to be, which is the opposite of the point.
+ */
+function SlidingMask({ src }: { src: string }) {
+  const node = useRef<HTMLImageElement>(null)
+  const previous = useRef<[number, number] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    centroidOf(src).then((centroid) => {
+      const image = node.current
+      if (cancelled || !image) return
+
+      const last = previous.current
+      previous.current = centroid
+      if (!centroid || !last) return
+
+      const dx = last[0] - centroid[0]
+      const dy = last[1] - centroid[1]
+      if (Math.hypot(dx, dy) > SAME_LESION) return
+
+      image.style.transition = 'none'
+      image.style.transform = `translate(${dx * 100}%, ${dy * 100}%)`
+      void image.offsetWidth // flush, so the two positions are not coalesced
+      image.style.transition = `transform ${SLIDE_MS}ms ease-out`
+      image.style.transform = 'translate(0, 0)'
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [src])
+
+  return (
+    <img
+      ref={node}
+      src={src}
+      alt=""
+      style={{ filter: MASK_BOUNDARY_FILTER }}
+      className="pointer-events-none absolute inset-0 h-full w-full"
+    />
   )
 }
 
