@@ -162,6 +162,7 @@ def main() -> None:
     # The 4090 is shared with the other model services, so the default stays
     # well clear of what GNS/GIM/CGI hold resident.
     parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument("--patience", type=int, default=30)
     parser.add_argument("--device", default="0")
     parser.add_argument(
         "--dataset-only", action="store_true", help="convert and stop, no training"
@@ -200,7 +201,7 @@ def main() -> None:
             # The dataset already carries a vertical flip of every image;
             # letting Ultralytics add its own would just repeat it.
             flipud=0.0,
-            patience=30,
+            patience=args.patience,
             seed=SEED,
         )
 

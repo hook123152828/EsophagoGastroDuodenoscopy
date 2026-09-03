@@ -43,6 +43,23 @@ CGI_WEIGHT = _path(
 )
 # Produced by scripts/train_polyp.py, not shipped by the upstream project.
 POLYP_WEIGHT = _path("POLYP_WEIGHT", POLYP_ROOT / "weights" / "polyp_yolo.pt")
+
+# The detector runs as an ensemble.  One model on its own proposes a box over
+# 89% of the labelled polyps but scores many of them below any threshold worth
+# deploying: at a usable precision a single detector shows about 80% of them,
+# and every polyp it loses is lost for good, because MedSAM segments whatever
+# it is given and never adds one back.  Three detectors, fused, rank the ones
+# they agree on above the ones only one of them saw, which is the half of the
+# problem that thresholds cannot reach.
+POLYP_WEIGHTS = [
+    _path(f"POLYP_WEIGHT_{i}", POLYP_ROOT / "weights" / name)
+    for i, name in enumerate(
+        os.getenv(
+            "POLYP_ENSEMBLE",
+            "polyp_yolo11n.pt,polyp_yolo11s.pt,polyp_yolo26n.pt",
+        ).split(",")
+    )
+]
 MEDSAM_WEIGHT = _path(
     "MEDSAM_WEIGHT", MEDSAM_ROOT / "work_dir" / "MedSAM" / "medsam_vit_b.pth"
 )
@@ -134,7 +151,14 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "3"))
 # GPU becomes the limit, as it should be.
 DECODE_WORKERS = int(os.getenv("DECODE_WORKERS", str(min(16, (os.cpu_count() or 4)))))
 
-# Detector confidence floor.  The detector was fine-tuned on a different scope
-# and console than the procedure videos, so it is run deliberately shy: a box
-# that survives this is worth a MedSAM pass, and MedSAM is the expensive half.
-POLYP_CONF = float(os.getenv("POLYP_CONF", "0.35"))
+# Detector confidence floor, on the *fused* score, which is not the scale a
+# single model reports: fusion scales a box by how many of the detectors found
+# it, so one only a third of them saw keeps a third of its score.
+#
+# 0.28 is the highest floor that still outlines 91% of the labelled polyps on
+# the validation split -- the target this was tuned to -- against 73% for the
+# single detector at 0.35, and it leaves 3 of the 81 validation images with a
+# polyp and nothing drawn, against 14.  It is bought with precision: 0.66
+# against 0.84, so a third of the boxes are over nothing.  0.35 gives 88% at
+# 0.73 if that trade is the wrong way round for a reader.
+POLYP_CONF = float(os.getenv("POLYP_CONF", "0.28"))
