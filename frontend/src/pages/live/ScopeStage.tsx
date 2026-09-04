@@ -163,22 +163,48 @@ export default function ScopeStage({
   )
 }
 
-/** How far a mask may travel between passes and still be the same lesion. */
-const SAME_LESION = 0.25
+/**
+ * The furthest the outline is ever seen to travel, as a fraction of the frame.
+ *
+ * A cap, not a rejection. Refusing to animate the long jumps meant the outline
+ * cut on exactly the frames where the scope was moving fastest and the motion
+ * mattered most. Measured over video1, consecutive masks move a median of 4.6%
+ * of the frame and at most 31%, so this only shortens the run-up on the fastest
+ * few; what it is really for is the case the measurement cannot rule out, where
+ * two masks half a second apart are different lesions and the outline would
+ * otherwise sweep the width of the picture between them.
+ */
+const MAX_TRAVEL = 0.25
 
 /**
- * Long enough to read as movement, short enough to finish first.
+ * How much of the gap between masks the slide is allowed to use, and the
+ * longest it may ever take.
  *
- * Masks arrive as fast as the pass that made them -- one every 67ms at GIM's
- * sampling rate -- and a slide that outlasts the gap never arrives: the
- * outline is released towards one position, interrupted by the next mask, and
- * sits permanently short of wherever the lesion actually is. The overlay is
- * already up to half a second behind the mucosa and the animation must not add
- * to that, so it is set under the shortest gap rather than to whatever looks
- * smoothest on its own. At 60fps it is still four frames of travel, which is
- * movement to the eye and a cut is not.
+ * A slide that outlasts the gap never arrives: it is interrupted by the next
+ * mask, and the outline sits permanently short of wherever the lesion is. The
+ * gap is not a constant -- masks arrive as fast as the pass that made them and
+ * as fast as the video is played, 49ms at normal speed here and 15ms at four
+ * times it -- so the duration is measured from the last one rather than
+ * guessed. The overlay is already up to half a second behind the mucosa and
+ * the animation must not add to that.
+ *
+ * At 80% of a 49ms gap it is still two or three frames of travel, which reads
+ * as movement where a cut does not. Where the gap is shorter than a frame there
+ * is nothing to animate and it becomes the cut again, which is the right answer
+ * -- at four times speed nobody can see 15ms of easing.
  */
-const SLIDE_MS = 60
+const SLIDE_OF_GAP = 0.8
+const SLIDE_MAX_MS = 60
+
+/**
+ * Under this, the outline is put where it belongs and not animated at all.
+ *
+ * Two frames. Below that there is no animation to see -- the masks are arriving
+ * faster than the display can draw the travel -- and attempting one only leaves
+ * the outline permanently mid-slide, which is the fault this was meant to fix
+ * rather than cause. It is reached by playing the recording back at speed.
+ */
+const SLIDE_MIN_GAP_MS = 32
 
 /**
  * The centroid of a mask's opaque pixels, as fractions of the frame.
@@ -250,9 +276,14 @@ async function centroidOf(src: string): Promise<[number, number] | null> {
 function SlidingMask({ src }: { src: string }) {
   const node = useRef<HTMLImageElement>(null)
   const previous = useRef<[number, number] | null>(null)
+  const previousAt = useRef(0)
 
   useEffect(() => {
     let cancelled = false
+
+    const now = performance.now()
+    const gap = previousAt.current ? now - previousAt.current : SLIDE_MAX_MS
+    previousAt.current = now
 
     centroidOf(src).then((centroid) => {
       const image = node.current
@@ -260,16 +291,41 @@ function SlidingMask({ src }: { src: string }) {
 
       const last = previous.current
       previous.current = centroid
-      if (!centroid || !last) return
 
-      const dx = last[0] - centroid[0]
-      const dy = last[1] - centroid[1]
-      if (Math.hypot(dx, dy) > SAME_LESION) return
+      // Where this mask belongs, whether or not it is animated into place.
+      // Every path that does not animate has to say so: the element survives
+      // the change of src, so an offset left on it by the last slide is still
+      // there, and the outline would stay parked at a position two masks old.
+      if (!last || !centroid || gap < SLIDE_MIN_GAP_MS) {
+        image.style.transition = 'none'
+        image.style.transform = 'translate(0, 0)'
+        return
+      }
+
+      // Start from where the outline actually *is*, not from where the last
+      // mask was. A slide can be interrupted -- at double speed the masks come
+      // every 24ms against a 60ms travel -- and reading the offset off the last
+      // pair of centroids throws away however much of the previous slide had
+      // run, yanking the outline back each time. The error compounded until the
+      // outline was a fifth of the frame behind and following nothing. Composed
+      // against the live position instead, an interrupted slide is just a slide
+      // that got part of the way, and the remainder decays.
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(image).transform)
+      let dx = matrix.e / (image.clientWidth || 1) + (last[0] - centroid[0])
+      let dy = matrix.f / (image.clientHeight || 1) + (last[1] - centroid[1])
+
+      const travel = Math.hypot(dx, dy)
+      if (travel === 0) return
+      if (travel > MAX_TRAVEL) {
+        dx *= MAX_TRAVEL / travel
+        dy *= MAX_TRAVEL / travel
+      }
 
       image.style.transition = 'none'
       image.style.transform = `translate(${dx * 100}%, ${dy * 100}%)`
       void image.offsetWidth // flush, so the two positions are not coalesced
-      image.style.transition = `transform ${SLIDE_MS}ms ease-out`
+      const duration = Math.min(gap * SLIDE_OF_GAP, SLIDE_MAX_MS)
+      image.style.transition = `transform ${duration.toFixed(0)}ms ease-out`
       image.style.transform = 'translate(0, 0)'
     })
 
