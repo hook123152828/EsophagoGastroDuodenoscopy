@@ -57,15 +57,19 @@ OVERLAY_RGBA = (250, 204, 21, 130)
 # MedSAM's own input size — the image encoder is trained at 1024x1024.
 SAM_SIZE = 1024
 
-# What each detector must reach before its box is worth fusing at all. Well
-# under POLYP_CONF, which applies to the fused score: fusion can only raise a
-# box that more than one detector proposed, and it cannot raise one that was
-# never proposed.
-PROPOSAL_CONF = float(os.getenv("POLYP_PROPOSAL_CONF", "0.01"))
+# How much two boxes may overlap before non-maximum suppression treats them as
+# one detection.  Tighter than Ultralytics' 0.7 default because augmentation
+# leaves near-duplicates: the same polyp found at two scales comes back as two
+# boxes a little apart, which survive a loose NMS.  Half the boxes over nothing
+# on the validation split were that -- 42 fell to 21 at 0.6, with the recall
+# and the number of polyps left undrawn both unchanged -- and each one is also
+# a lesion counted twice in the readout.
+NMS_IOU = float(os.getenv("POLYP_NMS_IOU", "0.6"))
+
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-DETECTORS: List[YOLO] = []
+DETECTOR: Optional[YOLO] = None
 MEDSAM = None
 
 # One thread through the models at a time, for the reason written out in
@@ -90,19 +94,17 @@ class PredictRequest(BaseModel):
 
 @app.on_event("startup")
 def startup() -> None:
-    global DETECTORS, MEDSAM
-    for weight in config.POLYP_WEIGHTS:
-        if not weight.exists():
-            raise RuntimeError(
-                f"detector weight not found at {weight}. "
-                "Run scripts/train_polyp.py first — see README.md."
-            )
-        DETECTORS.append(YOLO(str(weight)))
+    global DETECTOR, MEDSAM
+    if not config.POLYP_WEIGHT.exists():
+        raise RuntimeError(
+            f"detector weight not found at {config.POLYP_WEIGHT}. "
+            "Run scripts/train_polyp.py first — see README.md."
+        )
+    DETECTOR = YOLO(str(config.POLYP_WEIGHT))
     MEDSAM = sam_model_registry["vit_b"](checkpoint=str(config.MEDSAM_WEIGHT))
     MEDSAM = MEDSAM.to(DEVICE)
     MEDSAM.eval()
-    names = ", ".join(w.name for w in config.POLYP_WEIGHTS)
-    print(f"Polyp ready on {DEVICE} ({names} + MedSAM vit_b)")
+    print(f"Polyp ready on {DEVICE} ({config.POLYP_WEIGHT.name} + MedSAM vit_b)")
 
 
 @app.get("/health")
@@ -110,74 +112,22 @@ def health() -> dict:
     busy_since = _STATE["busy_since"]
     wedged = busy_since is not None and time.monotonic() - busy_since > WEDGED_AFTER_S
     return {
-        "ok": bool(DETECTORS) and MEDSAM is not None and not wedged,
+        "ok": DETECTOR is not None and MEDSAM is not None and not wedged,
         "service": "polyp",
         "wedged": wedged,
     }
 
 
-def _fuse(groups: List[np.ndarray], overlap: float = 0.55) -> np.ndarray:
-    """Weighted box fusion over the detectors' proposals.
-
-    Boxes that overlap are merged into one, positioned at the average of them
-    weighted by confidence, and scored at the best of them scaled by how many
-    detectors found it at all.  That scaling is the point of running more than
-    one: a box all three agree on keeps its score, a box only one of them saw
-    keeps a third of it.  Plain NMS would keep the highest score either way and
-    leave the ranking exactly as unhelpful as it was.
-    """
-    boxes = sorted((b for group in groups for b in group), key=lambda b: -b[4])
-    clusters: List[dict] = []
-
-    for box in boxes:
-        for cluster in clusters:
-            if _iou(box, cluster["box"]) > overlap:
-                cluster["members"].append(box)
-                weight = sum(m[4] for m in cluster["members"])
-                cluster["box"] = np.array(
-                    [
-                        *(
-                            sum(m[i] * m[4] for m in cluster["members"]) / weight
-                            for i in range(4)
-                        ),
-                        max(m[4] for m in cluster["members"]),
-                    ],
-                    dtype=np.float32,
-                )
-                break
-        else:
-            clusters.append({"box": np.asarray(box, dtype=np.float32), "members": [box]})
-
-    fused = []
-    for cluster in clusters:
-        agreement = min(len(cluster["members"]), len(groups)) / len(groups)
-        box = cluster["box"].copy()
-        box[4] *= agreement
-        if box[4] >= config.POLYP_CONF:
-            fused.append(box)
-    if not fused:
-        return np.zeros((0, 5), dtype=np.float32)
-    return np.stack(fused)
-
-
-def _iou(a, b) -> float:
-    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
-    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
-    if x2 <= x1 or y2 <= y1:
-        return 0.0
-    overlap = (x2 - x1) * (y2 - y1)
-    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - overlap
-    return float(overlap / union)
-
-
 def _detect(image: np.ndarray) -> np.ndarray:
     """Boxes above the confidence floor, as (N, 5) of x1 y1 x2 y2 conf.
 
-    Every detector sees the frame, each under test-time augmentation where its
-    architecture supports it, and their proposals are fused.  The floor is
-    applied to the fused score inside `_fuse`, so the detectors themselves are
-    run wide open: a box that only clears the threshold once three models have
-    agreed on it cannot be found by a detector that already discarded it.
+    Run under test-time augmentation: the frame is put through the detector at
+    several scales and flips and the proposals merged. It costs three passes
+    instead of one — 16ms against 6, which MedSAM's own cost makes irrelevant —
+    and it is the difference between outlining 73% of the labelled polyps and
+    85% of them, because a lesion the detector is unsure of at one scale it is
+    often sure of at another. The polyps were never invisible; they were
+    outranked, and a threshold cannot fix a ranking.
 
     Handed BGR, not the RGB everything else here works in: given an array
     rather than a path, Ultralytics assumes the channel order OpenCV loads in,
@@ -186,31 +136,23 @@ def _detect(image: np.ndarray) -> np.ndarray:
     boxes over 40 frames became 8 — with nothing to show that anything was
     wrong. MedSAM keeps the RGB array; only the detector sees this one.
     """
-    bgr = np.ascontiguousarray(image[:, :, ::-1])
-
-    groups = []
-    for detector in DETECTORS:
-        result = detector.predict(
-            bgr,
-            conf=PROPOSAL_CONF,
-            augment=True,
-            verbose=False,
-            device=DEVICE,
-        )[0]
-        if not len(result.boxes):
-            groups.append(np.zeros((0, 5), dtype=np.float32))
-            continue
-        groups.append(
-            np.concatenate(
-                [
-                    result.boxes.xyxy.cpu().numpy(),
-                    result.boxes.conf.cpu().numpy()[:, None],
-                ],
-                axis=1,
-            ).astype(np.float32)
-        )
-
-    return _fuse(groups)
+    result = DETECTOR.predict(
+        np.ascontiguousarray(image[:, :, ::-1]),
+        conf=config.POLYP_CONF,
+        iou=NMS_IOU,
+        augment=True,
+        verbose=False,
+        device=DEVICE,
+    )[0]
+    if not len(result.boxes):
+        return np.zeros((0, 5), dtype=np.float32)
+    return np.concatenate(
+        [
+            result.boxes.xyxy.cpu().numpy(),
+            result.boxes.conf.cpu().numpy()[:, None],
+        ],
+        axis=1,
+    ).astype(np.float32)
 
 
 @torch.no_grad()

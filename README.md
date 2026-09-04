@@ -87,32 +87,51 @@ git clone https://github.com/kojix2/Gastric-polyps-detection.git Polyp
 
 ```bash
 conda activate polyp_env
-python scripts/train_polyp.py            # 4090 上約 6 分鐘
+python scripts/train_polyp.py --model yolo11n.pt --name polyp         # 4090 上約 6 分鐘
+python scripts/train_polyp.py --model yolo11s.pt --name sweep_yolo11s
+python scripts/train_polyp.py --model yolo26n.pt --name sweep_yolo26n
+cp Polyp/runs/polyp/weights/best.pt         Polyp/weights/polyp_yolo11n.pt
+cp Polyp/runs/sweep_yolo11s/weights/best.pt Polyp/weights/polyp_yolo11s.pt
+cp Polyp/runs/sweep_yolo26n/weights/best.pt Polyp/weights/polyp_yolo26n.pt
 ```
 
-腳本會把 VOC 轉成 YOLO 格式（放 `Polyp/yolo_dataset/`）、訓練、把最佳權重複製到
-`Polyp/weights/polyp_yolo.pt`。切分是**以影像為單位**分組的，翻轉版本一定跟著
-原圖走同一邊，驗證集只留原圖——否則同一張照片會同時出現在訓練與驗證裡。
+腳本會把 VOC 轉成 YOLO 格式（放 `Polyp/yolo_dataset/`）、訓練、把最佳權重留在
+`Polyp/runs/<name>/weights/best.pt`（要蓋掉服務讀的權重得自己加 `--deploy`）。
+切分是**以影像為單位**分組的，翻轉版本一定跟著原圖走同一邊，驗證集只留原圖——
+否則同一張照片會同時出現在訓練與驗證裡。
 
-訓練回報的成績（81 張未見過的影像 / 89 個息肉）：
+**推論時做測試時增強（TTA）。** 理由是量出來的：把門檻降到 0.001，89 顆息肉裡有
+**87 顆**至少被框過。息肉不是看不見，是被排名壓下去了，而這種問題調門檻救不了——
+降門檻只會讓假框先湧出來。同一張幀過多個尺度與翻轉再合併提議，能把在單一尺度下
+排名過低的真陽性救回來，代價是三次前向而不是一次（9.2 ms/幀對 5.6 ms，相對 MedSAM
+可以忽略）。
 
-| mAP50 | mAP50-95 | Precision | Recall |
-|---|---|---|---|
-| 0.785 | 0.433 | 0.805 | 0.697 |
+搭配 TTA 必須把 NMS 的 IoU 從 ultralytics 預設的 0.7 收到 **0.6**：同一顆息肉在兩個
+尺度下被找到，會留下兩個位置略有差異的框，鬆的 NMS 併不掉。驗證集上「畫在沒有東西的
+地方」的框有一半是這種重複（42 → 21），而且它們也會讓控制面板把同一顆息肉數成兩顆。
 
-**但這組數字不是服務實際的行為。** mAP 是對所有信心門檻積分出來的，
-而服務跑在固定的 `POLYP_CONF` 上。同一批影像、實際打服務量到的是：
+同樣 81 張未見過的影像 / 89 個息肉，用 `scripts/eval_polyp.py` 在服務實際使用的
+門檻上量（**不是 mAP**——mAP 對所有門檻積分，服務只跑一個）：
 
-| `POLYP_CONF` | 抓到 | 召回 | 誤報 | 完全沒偵測的影像 |
+| 設定 | 框出的息肉 | 召回 | 誤報 | 有息肉卻完全沒框的影像 |
 |---|---|---|---|---|
-| 0.15 | 72/89 | 81% | 57 | 8/81 |
-| 0.20 | 72/89 | 81% | 36 | 8/81 |
-| 0.25 | 69/89 | 78% | 26 | 10/81 |
-| **0.35（預設）** | **65/89** | **73%** | **12** | **14/81** |
-| 0.50 | 52/89 | 58% | 5 | 27/81 |
+| 無 TTA @ 0.35 | 65/89 | 73% | 12 | 14/81 |
+| **TTA @ 0.30（預設）** | **76/89** | **85%** | **21** | **7/81** |
+| TTA @ 0.35 | 72/89 | 81% | 18 | 9/81 |
+| TTA @ 0.40 | 70/89 | 79% | 13 | 10/81 |
 
-> 資料集來自浙江大學的另一台胃鏡主機，與本專案的 GIF-H290 影像條件不同，
-> 實際跑在檢查影片上會比上表更差。上表的「誤報」是以標註為準，
+也就是多框出 11 顆息肉、完全沒框的影像從 14 張減到 7 張，代價是多 9 個誤報
+（precision 0.78 對 0.84）。要換方向就把 `POLYP_CONF` 調高。
+
+`scripts/diagnose_polyp.py` 是用來確認損失發生在哪一半的：
+**MedSAM 收到多少框就吐出多少遮罩**，沒有一個是空的、也沒有一個小到看不見
+（遮罩面積中位數佔框的 50%，最差 19%）。所以沒被畫出來的息肉都是偵測端沒提出來的，
+而且誤報也不會被下游過濾掉。
+
+> 兩個必須放在心上的但書。驗證集只有 **89 顆息肉**，召回在 0.85 附近的標準誤約
+> 4 個百分點，而且上面的門檻是在同一批 89 顆上選的——真實數字會比 85% 低。
+> 另外資料集來自浙江大學的另一台胃鏡主機，是靜態影像，與本專案 GIF-H290 的
+> 檢查影片是不同分布，實際跑起來會比上表更差。上表的「誤報」是以標註為準，
 > 目視有一部分其實是沒被標到的隆起。
 
 ### 1.2 MedSAM — 只要下載權重
@@ -325,7 +344,7 @@ bash scripts/stop_services.sh
 | `GNS_ROOT` / `GIM_ROOT` / `CGI_ROOT` | `./GNS` `./GIM` `./CGI` | 外部模型專案位置 |
 | `POLYP_ROOT` / `MEDSAM_ROOT` | `./Polyp` `./MedSAM` | 同上 |
 | `GNS_WEIGHT` / `GIM_WEIGHT` / `CGI_WEIGHT` | 各專案內 | 權重檔路徑 |
-| `POLYP_WEIGHT` | `Polyp/weights/polyp_yolo.pt` | `scripts/train_polyp.py` 產生 |
+| `POLYP_WEIGHT` | `Polyp/weights/polyp_yolo.pt` | `train_polyp.py --deploy` 產生 |
 | `MEDSAM_WEIGHT` | `MedSAM/work_dir/MedSAM/medsam_vit_b.pth` | |
 | `POLYP_CONF` | `0.35` | 偵測器信心門檻；調低會多抓也多誤報 |
 | `DECODE_WORKERS` | `min(16, CPU 數)` | 各模型服務解碼一批 JPEG 用的執行緒數 |
