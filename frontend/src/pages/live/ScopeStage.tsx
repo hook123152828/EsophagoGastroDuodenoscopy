@@ -150,11 +150,11 @@ export default function ScopeStage({
 
         {(maskVisible || polypVisible) && <MaskBoundaryFilter />}
 
-        {maskVisible && <SlidingMask src={fileUrl(maskFrame!.gim!.mask_url!)} />}
+        {maskVisible && <SmoothedMask src={fileUrl(maskFrame!.gim!.mask_url!)} />}
 
         {/* Drawn over the IM outline: where both models fire on the same
             mucosa, the discrete finding is the one to keep legible. */}
-        {polypVisible && <SlidingMask src={fileUrl(polyp!.mask_url!)} />}
+        {polypVisible && <SmoothedMask src={fileUrl(polyp!.mask_url!)} />}
 
         {alerting && <CornerBrackets />}
 
@@ -164,47 +164,38 @@ export default function ScopeStage({
 }
 
 /**
- * The furthest the outline is ever seen to travel, as a fraction of the frame.
+ * The furthest a finding is taken to have moved between two passes, as a
+ * fraction of the frame. Beyond it the two are treated as unrelated and the
+ * older one is dropped rather than dragged across the picture.
  *
- * A cap, not a rejection. Refusing to animate the long jumps meant the outline
- * cut on exactly the frames where the scope was moving fastest and the motion
- * mattered most. Measured over video1, consecutive masks move a median of 4.6%
- * of the frame and at most 31%, so this only shortens the run-up on the fastest
- * few; what it is really for is the case the measurement cannot rule out, where
- * two masks half a second apart are different lesions and the outline would
- * otherwise sweep the width of the picture between them.
+ * Set above the largest movement actually seen: over video1, consecutive masks
+ * move a median of 4.6% of the frame and at most 31%. At 0.25 it fired part way
+ * through a finding the scope was moving quickly across, and each firing throws
+ * the accumulated shape away and shows a single raw pass — the one thing this
+ * is here to avoid. It is a guard against two unrelated findings, not a limit
+ * on how fast a scope may move.
  */
-const MAX_TRAVEL = 0.25
+const MAX_TRAVEL = 0.35
 
 /**
- * How much of the gap between masks the slide is allowed to use, and the
- * longest it may ever take.
+ * How much of each new mask is taken, against what is already accumulated.
  *
- * A slide that outlasts the gap never arrives: it is interrupted by the next
- * mask, and the outline sits permanently short of wherever the lesion is. The
- * gap is not a constant -- masks arrive as fast as the pass that made them and
- * as fast as the video is played, 49ms at normal speed here and 15ms at four
- * times it -- so the duration is measured from the last one rather than
- * guessed. The overlay is already up to half a second behind the mucosa and
- * the animation must not add to that.
+ * The segmentation is recomputed from scratch on every pass and agrees with
+ * itself only loosely: over video1, consecutive masks share a median of 69% of
+ * their area, and a quarter of the pairs differ by more than a third. Shown
+ * one after another at fifteen a second, the outline does not sit around a
+ * finding, it writhes — the shape is rewritten faster than the eye can take
+ * any one of them in, and no amount of moving it to the right place helps,
+ * because it was never the position that was wrong.
  *
- * At 80% of a 49ms gap it is still two or three frames of travel, which reads
- * as movement where a cut does not. Where the gap is shorter than a frame there
- * is nothing to animate and it becomes the cut again, which is the right answer
- * -- at four times speed nobody can see 15ms of easing.
+ * So the mask is not drawn. What is drawn is a running average of the last few,
+ * which is what a finding that is really there looks like: a pixel inside the
+ * lesion on most passes stays opaque, one that flickers in and out lands
+ * between and falls under the outline's threshold. At 0.4 the average turns
+ * over in about two passes, damping the disagreement without holding a shape
+ * after the scope has left it.
  */
-const SLIDE_OF_GAP = 0.8
-const SLIDE_MAX_MS = 60
-
-/**
- * Under this, the outline is put where it belongs and not animated at all.
- *
- * Two frames. Below that there is no animation to see -- the masks are arriving
- * faster than the display can draw the travel -- and attempting one only leaves
- * the outline permanently mid-slide, which is the fault this was meant to fix
- * rather than cause. It is reached by playing the recording back at speed.
- */
-const SLIDE_MIN_GAP_MS = 32
+const BLEND = 0.4
 
 /**
  * The centroid of a mask's opaque pixels, as fractions of the frame.
@@ -214,18 +205,7 @@ const SLIDE_MIN_GAP_MS = 32
  */
 const CENTROIDS = new Map<string, [number, number] | null>()
 
-async function centroidOf(src: string): Promise<[number, number] | null> {
-  const cached = CENTROIDS.get(src)
-  if (cached !== undefined) return cached
-
-  const image = new Image()
-  image.src = src
-  try {
-    await image.decode()
-  } catch {
-    return null
-  }
-
+function centroidOfImage(image: HTMLImageElement): [number, number] | null {
   // Small: the centroid of a blob does not need the blob's resolution, and
   // this runs on every mask the scan produces.
   const size = 48
@@ -246,87 +226,111 @@ async function centroidOf(src: string): Promise<[number, number] | null> {
     x += (i % size) * alpha
     y += Math.floor(i / size) * alpha
   }
-  const centroid: [number, number] | null =
-    weight === 0 ? null : [x / weight / size, y / weight / size]
-  CENTROIDS.set(src, centroid)
-  return centroid
+  return weight === 0 ? null : [x / weight / size, y / weight / size]
+}
+
+async function loadMask(
+  src: string,
+): Promise<{ image: HTMLImageElement; centroid: [number, number] | null } | null> {
+  const image = new Image()
+  image.src = src
+  try {
+    await image.decode()
+  } catch {
+    return null
+  }
+  let centroid = CENTROIDS.get(src)
+  if (centroid === undefined) {
+    centroid = centroidOfImage(image)
+    CENTROIDS.set(src, centroid)
+  }
+  return { image, centroid }
 }
 
 /**
- * A mask that slides to where the lesion has moved instead of jumping there.
+ * The finding, drawn as what the last few passes agree on rather than as the
+ * newest of them.
  *
- * The masks are computed at a fraction of the video's rate and held until the
- * next one, so an outline is always a little behind the mucosa under it and
- * catches up in one step. Cutting between two positions several times a second
- * reads as flicker, and the eye loses which of the two is the finding.
+ * Each pass is folded into a canvas that is carried between them. Before the
+ * fold the canvas is shifted by however far the finding's centroid moved, so
+ * the accumulated shape follows the lesion instead of smearing along its path
+ * — the average is over what the passes said about the *same* mucosa, not
+ * about the same pixels. Then it is faded and the new pass blended in.
  *
- * So each new mask is placed where the last one was and moved into position.
- * The offset is the shift between their centroids, measured off the images
- * themselves — the protocol carries a mask's area and score but not where it
- * is. A mask that lands more than a quarter of the frame away is not the same
- * lesion having moved, so it appears where it is.
- *
- * The two positions are written straight to the node with a reflow between
- * them, rather than through state. Going through state costs a render for the
- * offset, a frame for the callback that clears it, and a render for the zero —
- * about 48ms before the outline starts moving, against a 64ms median gap
- * between masks. The overlay spent most of its life parked where the lesion
- * used to be, which is the opposite of the point.
+ * This replaced sliding the mask image into position, which was addressing the
+ * wrong half of it. The outline did travel, but it changed shape on arrival,
+ * and a shape that is redrawn fifteen times a second reads as boiling however
+ * smoothly it is moved.
  */
-function SlidingMask({ src }: { src: string }) {
-  const node = useRef<HTMLImageElement>(null)
+function SmoothedMask({ src }: { src: string }) {
+  const node = useRef<HTMLCanvasElement>(null)
+  const scratch = useRef<HTMLCanvasElement | null>(null)
   const previous = useRef<[number, number] | null>(null)
-  const previousAt = useRef(0)
 
   useEffect(() => {
     let cancelled = false
 
-    const now = performance.now()
-    const gap = previousAt.current ? now - previousAt.current : SLIDE_MAX_MS
-    previousAt.current = now
+    loadMask(src).then((mask) => {
+      const canvas = node.current
+      if (cancelled || !canvas || !mask) return
 
-    centroidOf(src).then((centroid) => {
-      const image = node.current
-      if (cancelled || !image) return
+      const { image, centroid } = mask
+      const width = image.naturalWidth
+      const height = image.naturalHeight
+      const context = canvas.getContext('2d')
+      if (!context || !width) return
+
+      // A change of size means a different session, not a moved lesion.
+      const started = canvas.width !== width || canvas.height !== height
+      if (started) {
+        canvas.width = width
+        canvas.height = height
+      }
 
       const last = previous.current
       previous.current = centroid
 
-      // Where this mask belongs, whether or not it is animated into place.
-      // Every path that does not animate has to say so: the element survives
-      // the change of src, so an offset left on it by the last slide is still
-      // there, and the outline would stay parked at a position two masks old.
-      if (!last || !centroid || gap < SLIDE_MIN_GAP_MS) {
-        image.style.transition = 'none'
-        image.style.transform = 'translate(0, 0)'
+      const dx = last && centroid ? (centroid[0] - last[0]) * width : 0
+      const dy = last && centroid ? (centroid[1] - last[1]) * height : 0
+      const travelled = Math.hypot(dx / width, dy / height)
+
+      if (started || !last || !centroid || travelled > MAX_TRAVEL) {
+        // Nothing worth carrying: show this pass on its own rather than blend
+        // it with a finding it has nothing to do with.
+        context.clearRect(0, 0, width, height)
+        context.drawImage(image, 0, 0)
         return
       }
 
-      // Start from where the outline actually *is*, not from where the last
-      // mask was. A slide can be interrupted -- at double speed the masks come
-      // every 24ms against a 60ms travel -- and reading the offset off the last
-      // pair of centroids throws away however much of the previous slide had
-      // run, yanking the outline back each time. The error compounded until the
-      // outline was a fifth of the frame behind and following nothing. Composed
-      // against the live position instead, an interrupted slide is just a slide
-      // that got part of the way, and the remainder decays.
-      const matrix = new DOMMatrixReadOnly(getComputedStyle(image).transform)
-      let dx = matrix.e / (image.clientWidth || 1) + (last[0] - centroid[0])
-      let dy = matrix.f / (image.clientHeight || 1) + (last[1] - centroid[1])
-
-      const travel = Math.hypot(dx, dy)
-      if (travel === 0) return
-      if (travel > MAX_TRAVEL) {
-        dx *= MAX_TRAVEL / travel
-        dy *= MAX_TRAVEL / travel
+      if (dx || dy) {
+        // Carried through a scratch copy: a canvas drawn onto itself at an
+        // offset would read the pixels it is writing.
+        let buffer = scratch.current
+        if (!buffer) {
+          buffer = document.createElement('canvas')
+          scratch.current = buffer
+        }
+        if (buffer.width !== width || buffer.height !== height) {
+          buffer.width = width
+          buffer.height = height
+        }
+        const into = buffer.getContext('2d')
+        if (into) {
+          into.clearRect(0, 0, width, height)
+          into.drawImage(canvas, dx, dy)
+          context.clearRect(0, 0, width, height)
+          context.drawImage(buffer, 0, 0)
+        }
       }
 
-      image.style.transition = 'none'
-      image.style.transform = `translate(${dx * 100}%, ${dy * 100}%)`
-      void image.offsetWidth // flush, so the two positions are not coalesced
-      const duration = Math.min(gap * SLIDE_OF_GAP, SLIDE_MAX_MS)
-      image.style.transition = `transform ${duration.toFixed(0)}ms ease-out`
-      image.style.transform = 'translate(0, 0)'
+      context.globalCompositeOperation = 'destination-out'
+      context.fillStyle = `rgba(0, 0, 0, ${BLEND})`
+      context.fillRect(0, 0, width, height)
+
+      context.globalCompositeOperation = 'source-over'
+      context.globalAlpha = BLEND
+      context.drawImage(image, 0, 0)
+      context.globalAlpha = 1
     })
 
     return () => {
@@ -335,10 +339,8 @@ function SlidingMask({ src }: { src: string }) {
   }, [src])
 
   return (
-    <img
+    <canvas
       ref={node}
-      src={src}
-      alt=""
       style={{ filter: MASK_BOUNDARY_FILTER }}
       className="pointer-events-none absolute inset-0 h-full w-full"
     />
