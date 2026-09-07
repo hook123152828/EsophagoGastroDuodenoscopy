@@ -162,58 +162,67 @@ export const REGION_ORDER: RegionId[] = [
 export const GIM_REGIONS: RegionId[] = ['cardia', 'body', 'angle', 'antrum']
 
 /**
- * The site probabilities with the training floor taken out.
+ * Which site each GNS class belongs to. Mirrors `REGION_MAP` in
+ * backend/protocol.py, which is the authority; G1–G6 are opaque identifiers in
+ * both the SGAFormer paper and its code, and the mapping is empirical.
  *
- * GNS was trained with label smoothing, which is a way of telling a model not
- * to be certain: a tenth of the probability mass is handed to the wrong
- * classes on purpose. The model learned that, and it shows in every frame —
- * the winner takes about 47% while the other fifteen classes sit in a flat
- * band between 3.4% and 4.1%, no matter what is on screen. Over one
- * procedure's 64,163 frames the top class never once left the range
- * 43.6%–58.7%.
- *
- * That band is not a belief about anatomy. It is a constant the model was
- * trained to emit, and reading it as "the model is only 47% sure" understates
- * a call it makes by a factor of twelve over the runner-up.
- *
- * So the flat part is subtracted and what is left is renormalised: the result
- * is still a distribution summing to one, in the same order, with the same
- * winner — only without the floor. On that same procedure the median top
- * class reads 90% rather than 47%.
- *
- * This is a display transform, not a calibration. Nothing here was fitted to
- * labelled outcomes, because there are none: it removes an artefact whose
- * origin is known, and claims no more than that.
+ * Keyed on the stem, so the two modalities of a class share an entry: `G2_WL`
+ * and `G2_NBI` are the same piece of stomach under different light.
  */
-export function withoutSmoothingFloor(
-  probs: Record<string, number>,
-): Record<string, number> {
-  const values = Object.values(probs)
-  if (values.length === 0) return probs
-
-  const floor = Math.min(...values)
-  const above: Record<string, number> = {}
-  let total = 0
-  for (const [name, value] of Object.entries(probs)) {
-    const residual = value - floor
-    above[name] = residual
-    total += residual
-  }
-
-  // Every class equal — nothing to take out, and nothing to divide by.
-  if (total <= 0) return probs
-
-  const scaled: Record<string, number> = {}
-  for (const [name, value] of Object.entries(above)) scaled[name] = value / total
-  return scaled
+const REGION_OF_CLASS: Record<string, RegionId> = {
+  G1: 'antrum',
+  G2: 'antrum',
+  G3: 'body',
+  G4: 'body',
+  G5: 'angle',
+  G6: 'cardia',
+  E: 'esophagus',
+  D: 'duodenum',
+  none: 'unknown',
 }
 
-/** The winning site's share once the training floor is out of the way. */
-export function siteConfidence(gns: GnsResult | null | undefined): number | null {
+export function regionOfClass(className: string): RegionId {
+  return REGION_OF_CLASS[className.split('_')[0]] ?? 'unknown'
+}
+
+/**
+ * How much of the model's belief is in a site, rather than in one class of it.
+ *
+ * A site is several classes — the antrum is G1 and G2, each under two lights —
+ * and the question the panel asks is about the site, so the classes that make
+ * it up are added together. These are the model's own probabilities, left
+ * alone: they sum to one over the sixteen classes, so the sites sum to one.
+ *
+ * The model was trained with label smoothing, which puts a floor under every
+ * class, so a site made of four of them collects twice the floor of one made
+ * of two — the antrum against the angle. Subtracting that floor before summing
+ * would even it out and read a good deal higher, but it would no longer be
+ * what the model reported, and it is the reported number that is wanted here.
+ */
+export function regionConfidence(
+  gns: GnsResult | null | undefined,
+  region: RegionId,
+): number | null {
   if (!gns) return null
-  const adjusted = withoutSmoothingFloor(gns.probs)
-  const value = adjusted[gns.class_name]
-  return value === undefined ? gns.confidence : value
+  let total = 0
+  for (const [name, value] of Object.entries(gns.probs)) {
+    if (regionOfClass(name) === region) total += value
+  }
+  return total
+}
+
+/** The largest single class within a site. */
+export function topSubsite(
+  gns: GnsResult | null | undefined,
+  region: RegionId,
+): { name: string; value: number } | null {
+  if (!gns) return null
+  let best: { name: string; value: number } | null = null
+  for (const [name, value] of Object.entries(gns.probs)) {
+    if (regionOfClass(name) !== region) continue
+    if (!best || value > best.value) best = { name, value }
+  }
+  return best
 }
 
 /** Whether GIM is worth running on a frame GNS classified this way. */

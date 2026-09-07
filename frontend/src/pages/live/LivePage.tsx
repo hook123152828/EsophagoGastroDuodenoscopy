@@ -10,11 +10,13 @@ import {
   gimScannedAt,
   polypFrameAt,
   seenRegions,
-  siteConfidence,
+  regionConfidence,
+  topSubsite,
   trackModalityAt,
   trackRegionAt,
   GIM_REGIONS,
   POLYP_REGIONS,
+  REGION_LABEL,
 } from '@/protocol'
 
 import { LayoutBlock, LayoutCanvas, useLayoutEditor } from './LayoutCanvas'
@@ -136,10 +138,20 @@ export default function LivePage() {
   const modalityTrack = useMemo(() => buildModalityTrack(frames), [frames])
   const modality = trackModalityAt(modalityTrack, currentTime)
 
+  // The site the panel is showing, and how much of the model's belief is in it
+  // rather than in the one class of it that happened to win. Below the track,
+  // because it is the *displayed* site being asked about.
+  const siteBelief = median(
+    present(useRecent(regionConfidence(frame?.gns, region), currentTime)),
+  )
+  const subsite = topSubsite(frame?.gns, region)
+  const subsiteName = mode(useRecent(subsite?.name ?? null, currentTime))
+  const subsiteBelief = median(
+    present(useRecent(subsite?.value ?? null, currentTime)),
+  )
+
   // The readouts, steadied over a second. The site and the light already have
   // their own smoothing; these are the numbers beside them.
-  const gnsClass = mode(useRecent(frame?.gns?.class_name ?? null, currentTime))
-  const gnsConfidence = median(present(useRecent(siteConfidence(frame?.gns), currentTime)))
   const imScore = mode(present(useRecent(maskFrame?.gim?.score ?? null, currentTime)))
   const imArea = median(present(useRecent(maskFrame?.gim?.area ?? null, currentTime)))
 
@@ -297,13 +309,35 @@ export default function LivePage() {
                 </span>
               </Readout>
 
+              {/* The site, and the belief in the site — every class that maps
+                  to it added together, not the share of the one that won. */}
               <Readout label="GNS">
-                {gnsClass ? (
+                {frame?.gns ? (
                   <>
-                    {gnsClass}
-                    {gnsConfidence !== null && (
+                    {REGION_LABEL[region]}
+                    {siteBelief !== null && (
                       <span className="ml-1.5 text-console-muted">
-                        {(gnsConfidence * 100).toFixed(0)}%
+                        {(siteBelief * 100).toFixed(0)}%
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  '—'
+                )}
+              </Readout>
+
+              {/* Which class of that site it is. The classes are opaque in the
+                  paper and in the code, so the identifier is all there is to
+                  print; what it is worth is that G1 and G2 sit at opposite
+                  ends of the antrum, and knowing which of them is answered
+                  here rather than by the site above. */}
+              <Readout label="Sub-site">
+                {subsiteName ? (
+                  <>
+                    {subsiteName}
+                    {subsiteBelief !== null && (
+                      <span className="ml-1.5 text-console-muted">
+                        {(subsiteBelief * 100).toFixed(0)}%
                       </span>
                     )}
                   </>
