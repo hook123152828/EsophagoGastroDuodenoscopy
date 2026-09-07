@@ -1,9 +1,7 @@
 import { useEffect, useState, type RefObject } from 'react'
 
-import {
-  MASK_BOUNDARY_FILTER,
-  MaskBoundaryFilter,
-} from '@/components/MaskBoundaryFilter'
+import { SmoothMaskOverlay } from '@/components/SmoothMaskOverlay'
+import { EMPTY_MASK_WINDOW, type MaskWindow } from '@/components/maskPlayback'
 import {
   fileUrl,
   roiCropStyle,
@@ -18,6 +16,8 @@ interface Props {
   showMask: boolean
   polypFrame: FrameRecord | null
   showPolyp: boolean
+  maskWindow: MaskWindow
+  polypWindow: MaskWindow
 }
 
 /**
@@ -42,6 +42,8 @@ export default function ScopeStage({
   showMask,
   polypFrame,
   showPolyp,
+  maskWindow,
+  polypWindow,
 }: Props) {
   // A callback ref rather than useRef: the box is remounted when the page
   // rearranges (layout mode), and a plain ref would leave the observer watching
@@ -116,8 +118,6 @@ export default function ScopeStage({
 
   const gim = maskFrame?.gim ?? null
   const polyp = showPolyp ? (polypFrame?.polyp ?? null) : null
-  const maskVisible = showMask && Boolean(maskFrame?.gim?.mask_url)
-  const polypVisible = Boolean(polyp?.mask_url)
   const alerting =
     (showMask && gim !== null && gim.score >= 1) || Boolean(polyp?.boxes.length)
 
@@ -148,27 +148,23 @@ export default function ScopeStage({
           </div>
         )}
 
-        {(maskVisible || polypVisible) && <MaskBoundaryFilter />}
-
-        {maskVisible && (
-          <img
-            src={fileUrl(maskFrame!.gim!.mask_url!)}
-            alt=""
-            style={{ filter: MASK_BOUNDARY_FILTER }}
-            className="pointer-events-none absolute inset-0 h-full w-full"
-          />
-        )}
+        <SmoothMaskOverlay
+          key={`im-${manifest.video.media_url}`}
+          samples={showMask ? maskWindow : EMPTY_MASK_WINDOW}
+          width={manifest.roi.width}
+          height={manifest.roi.height}
+          videoRef={videoRef}
+        />
 
         {/* Drawn over the IM outline: where both models fire on the same
             mucosa, the discrete finding is the one to keep legible. */}
-        {polypVisible && (
-          <img
-            src={fileUrl(polyp!.mask_url!)}
-            alt=""
-            style={{ filter: MASK_BOUNDARY_FILTER }}
-            className="pointer-events-none absolute inset-0 h-full w-full"
-          />
-        )}
+        <SmoothMaskOverlay
+          key={`polyp-${manifest.video.media_url}`}
+          samples={showPolyp ? polypWindow : EMPTY_MASK_WINDOW}
+          width={manifest.roi.width}
+          height={manifest.roi.height}
+          videoRef={videoRef}
+        />
 
         {alerting && <CornerBrackets />}
 

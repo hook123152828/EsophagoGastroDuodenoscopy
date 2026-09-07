@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { maskWindowAt } from '@/components/maskPlayback'
 
 import {
   buildModalityTrack,
@@ -113,6 +114,15 @@ export default function LivePage() {
     [frames, currentTime],
   )
   const polypFrame = live.frame?.polyp ? live.frame : cachedPolyp
+
+  const maskWindow = useMemo(
+    () => maskWindowAt(frames, currentTime, 'gim', live.frame),
+    [frames, currentTime, live.frame],
+  )
+  const polypWindow = useMemo(
+    () => maskWindowAt(frames, currentTime, 'polyp', live.frame),
+    [frames, currentTime, live.frame],
+  )
 
   // Per-frame GNS output flickers between neighbouring sites; the track is the
   // smoothed version of it, and everything that names a site reads from there.
@@ -234,6 +244,8 @@ export default function LivePage() {
               <ScopeStage
                 manifest={manifest}
                 videoRef={videoRef}
+                maskWindow={maskWindow}
+                polypWindow={polypWindow}
                 maskFrame={maskFrame}
                 showMask={showMask && imEligible}
                 polypFrame={polypFrame}

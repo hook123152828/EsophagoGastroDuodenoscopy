@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { MASK_LOOKAHEAD_S } from '@/components/maskPlayback'
 
 import {
   analyzeFrame,
@@ -67,16 +68,27 @@ function pending(
 ): boolean {
   if (!frame.gns) return true
   if (gimApplies(frame.gns) && !gimScannedAt(frames, frame.t)) return true
-  return wantPolyp && polypApplies(frame.gns) && !frame.polyp
+  return wantPolyp && polypApplies(frame.gns) && !nearbyResult(frames, frame.t, 'polyp')
+}
+
+/** Reuse a nearby analysed sample, including negatives, instead of chasing every frame. */
+function nearbyResult(frames: FrameRecord[], time: number, kind: 'gim' | 'polyp'): boolean {
+  const start = frameAt(frames, time - 0.12)
+  const at = frameAt(frames, time)
+  if (!start || !at) return false
+  for (let i = start.index; i < frames.length && frames[i].t <= time + 0.12; i++) {
+    const frame = frames[i]
+    if (Math.abs(frame.t - time) <= 0.12 && frame[kind] &&
+        frame.gns?.modality === at.gns?.modality && frame.gns?.region === at.gns?.region) return true
+  }
+  return false
 }
 
 /**
- * Analyses whatever is on screen right now, ahead of the background scan.
- *
- * Fires wherever the frame under the playhead is still incomplete: everywhere
- * right after loading a video, and on every gastric NBI frame the GIM pass has
- * not reached. The mask lands a few hundred milliseconds late as a result —
- * what is on screen matters more than being in step with it.
+ * Fills missing analysis at the playhead first. Once it is covered, playback
+ * uses spare capacity to prepare a sample up to half a second ahead so the
+ * overlay can interpolate towards it. Paused playback requests only its own
+ * missing result. Future results reach the overlay through the session table.
  *
  * One request in flight at a time: the requests naturally serialise behind the
  * round trip, and dropping ticks is better than queueing stale timestamps
@@ -107,14 +119,17 @@ export function useLiveAnalysis(
     if (!sessionId || !enabled) return
 
     let cancelled = false
+    let roundTripMs = 200
 
     const tick = async () => {
       const video = videoRef.current
-      if (!video) return
+      if (!video || video.seeking) return
 
       const stale = performance.now() - lastResultAt.current > ACTIVE_GRACE_MS
       const time = video.currentTime
       const cached = frameAt(framesRef.current, time)
+      let requestTime = time
+      let prefetch = false
 
       if (cached && !pending(framesRef.current, cached, wantPolyp)) {
         // The scan covers this timestamp. Drop the on-demand record at once so
@@ -125,7 +140,17 @@ export function useLiveAnalysis(
             ? { ...current, frame: null, active: current.active && !stale }
             : current,
         )
-        return
+        if (video.paused || video.ended || !Number.isFinite(video.duration)) return
+        // Use spare request capacity to get a right-hand interpolation endpoint.
+        const lead = Math.min(MASK_LOOKAHEAD_S, Math.max(0.25, roundTripMs / 1000 * video.playbackRate + 0.1))
+        requestTime = Math.min(video.duration, time + lead)
+        const future = frameAt(framesRef.current, requestTime)
+        if (!future || future.t <= time || Math.abs(future.t - requestTime) > 0.12) return
+        const needed = !future.gns ||
+          (gimApplies(future.gns) && !nearbyResult(framesRef.current, requestTime, 'gim')) ||
+          (wantPolyp && polypApplies(future.gns) && !nearbyResult(framesRef.current, requestTime, 'polyp'))
+        if (!needed) return
+        prefetch = true
       }
 
       if (inFlight.current) return
@@ -133,12 +158,14 @@ export function useLiveAnalysis(
       inFlight.current = true
       const started = performance.now()
       try {
-        const frame = await analyzeFrame(sessionId, time, { polyp: wantPolyp })
+        const frame = await analyzeFrame(sessionId, requestTime, { polyp: wantPolyp })
         if (!cancelled) {
           lastResultAt.current = performance.now()
+          roundTripMs = lastResultAt.current - started
           setState({
-            frame,
-            latencyMs: Math.round(lastResultAt.current - started),
+            // Future results enter the frame table through SSE, never current readouts.
+            frame: prefetch || video.seeking || Math.abs(video.currentTime - frame.t) > MASK_LOOKAHEAD_S ? null : frame,
+            latencyMs: Math.round(roundTripMs),
             active: true,
           })
         }
