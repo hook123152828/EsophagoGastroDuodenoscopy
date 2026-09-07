@@ -555,7 +555,8 @@ function CgiSection({ state }: { state: CgiState }) {
           </p>
           <h2 className="mt-1 text-xl font-semibold">Corpus-predominant gastritis</h2>
           <p className="mt-1 text-sm text-slate-500">
-            Highest-scoring antrum × body × upper-corpus white-light combination.
+            Highest-scoring antrum × body × upper-corpus stable white-light
+            combination.
           </p>
         </div>
       </div>
@@ -667,7 +668,8 @@ function CgiEvidenceGrid({ evidence }: { evidence: CgiEvidence[] }) {
                   {item.quality && (
                     <p className="mt-1 text-xs text-emerald-700">
                       Quality passed · brightness {item.quality.meanLuminance.toFixed(0)} ·
-                      sharpness {item.quality.sharpness.toFixed(0)}
+                      sharpness {item.quality.sharpness.toFixed(0)} · green bias{' '}
+                      {item.quality.greenExcess.toFixed(0)}
                     </p>
                   )}
                 </>

@@ -9,6 +9,8 @@ const CGI_POOL_SIZE = 4
 const CGI_MIN_GAP_S = 2
 const CGI_QUALITY_SCAN_LIMIT = 24
 const CGI_QUALITY_SAMPLE_WIDTH = 160
+const CGI_WL_STABILITY_RADIUS_S = 1
+const CGI_WL_STABILITY_MIN_SAMPLES = 5
 const GIM_EVIDENCE_SIZE = 6
 const GIM_CONSENSUS_SIZE = 3
 const GIM_CONSENSUS_POSITIVES = 2
@@ -25,6 +27,7 @@ export const CGI_QUALITY_THRESHOLDS = {
   maxDarkFraction: 0.35,
   maxHighlightFraction: 0.2,
   minSharpness: 35,
+  maxGreenExcess: 15,
 } as const
 
 export type CgiRegion = Extract<RegionId, 'antrum' | 'body' | 'cardia'>
@@ -54,6 +57,7 @@ export interface CgiFrameQuality {
   darkFraction: number
   highlightFraction: number
   sharpness: number
+  greenExcess: number
   rejectionReasons: string[]
 }
 
@@ -111,8 +115,12 @@ function prioritizedCgiCandidates(
   region: CgiRegion,
   limit: number,
 ): FrameRecord[] {
+  const stableWhiteLightFrames = stableWhiteLightFrameIndexes(frames)
   const ranked = frames
-    .filter((frame) => isCgiCandidate(frame, region))
+    .filter(
+      (frame) =>
+        stableWhiteLightFrames.has(frame.index) && isCgiCandidate(frame, region),
+    )
     .sort(
       (left, right) =>
         (right.gns?.confidence ?? 0) - (left.gns?.confidence ?? 0),
@@ -134,6 +142,46 @@ function prioritizedCgiCandidates(
   }
 
   return selected
+}
+
+/**
+ * Exclude illumination-switch frames from CGI.
+ *
+ * GNS can label the first green frame after NBI as WL even though its colour
+ * has not settled yet. A CGI candidate is therefore usable only when every
+ * sampled frame in the surrounding two-second window is also classified as
+ * WL. The minimum sample count keeps a sparse or incomplete timeline from
+ * being mistaken for stable illumination.
+ */
+function stableWhiteLightFrameIndexes(frames: FrameRecord[]): Set<number> {
+  const ordered = [...frames].sort((left, right) => left.t - right.t)
+  const stable = new Set<number>()
+  let left = 0
+  let right = 0
+  let nonWhiteLight = 0
+
+  for (const frame of ordered) {
+    const windowStart = frame.t - CGI_WL_STABILITY_RADIUS_S
+    const windowEnd = frame.t + CGI_WL_STABILITY_RADIUS_S
+
+    while (right < ordered.length && ordered[right].t <= windowEnd) {
+      if (ordered[right].gns?.modality !== 'WL') nonWhiteLight += 1
+      right += 1
+    }
+    while (left < ordered.length && ordered[left].t < windowStart) {
+      if (ordered[left].gns?.modality !== 'WL') nonWhiteLight -= 1
+      left += 1
+    }
+
+    if (
+      right - left >= CGI_WL_STABILITY_MIN_SAMPLES &&
+      nonWhiteLight === 0
+    ) {
+      stable.add(frame.index)
+    }
+  }
+
+  return stable
 }
 
 /**
@@ -291,6 +339,10 @@ async function measureCgiFrameQuality(blob: Blob): Promise<CgiFrameQuality> {
   let luminanceTotal = 0
   let darkPixels = 0
   let highlightPixels = 0
+  let usableRedTotal = 0
+  let usableGreenTotal = 0
+  let usableBlueTotal = 0
+  let usableColorPixels = 0
 
   for (let pixel = 0; pixel < luminance.length; pixel += 1) {
     const offset = pixel * 4
@@ -302,11 +354,21 @@ async function measureCgiFrameQuality(blob: Blob): Promise<CgiFrameQuality> {
     luminanceTotal += value
     if (value < 25) darkPixels += 1
     if (value > 245) highlightPixels += 1
+    if (value >= 25 && value <= 245) {
+      usableRedTotal += pixels[offset]
+      usableGreenTotal += pixels[offset + 1]
+      usableBlueTotal += pixels[offset + 2]
+      usableColorPixels += 1
+    }
   }
 
   const meanLuminance = luminanceTotal / luminance.length
   const darkFraction = darkPixels / luminance.length
   const highlightFraction = highlightPixels / luminance.length
+  const colorDivisor = Math.max(usableColorPixels, 1)
+  const greenExcess =
+    usableGreenTotal / colorDivisor -
+    (usableRedTotal / colorDivisor + usableBlueTotal / colorDivisor) / 2
 
   let laplacianTotal = 0
   let laplacianSquaredTotal = 0
@@ -345,6 +407,9 @@ async function measureCgiFrameQuality(blob: Blob): Promise<CgiFrameQuality> {
   if (sharpness < CGI_QUALITY_THRESHOLDS.minSharpness) {
     rejectionReasons.push('blurred')
   }
+  if (greenExcess > CGI_QUALITY_THRESHOLDS.maxGreenExcess) {
+    rejectionReasons.push('green color cast')
+  }
 
   return {
     accepted: rejectionReasons.length === 0,
@@ -352,6 +417,7 @@ async function measureCgiFrameQuality(blob: Blob): Promise<CgiFrameQuality> {
     darkFraction,
     highlightFraction,
     sharpness,
+    greenExcess,
     rejectionReasons,
   }
 }
